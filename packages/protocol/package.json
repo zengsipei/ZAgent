@@ -1,0 +1,8 @@
+{
+  "name": "@zagent/protocol",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

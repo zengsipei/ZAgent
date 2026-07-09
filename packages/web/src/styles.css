@@ -1,0 +1,52 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #1e1e1e;
+  color: #ccc;
+  font-family: system-ui, sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.status-bar {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #444;
+  flex: none;
+}
+
+.terminal-container {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+
+.token-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 480px;
+  margin: 20vh auto 0;
+  padding: 0 16px;
+}
+
+.token-form input {
+  padding: 8px;
+  font-family: monospace;
+  background: #2d2d2d;
+  color: #eee;
+  border: 1px solid #555;
+  border-radius: 4px;
+}
+
+.token-form button {
+  padding: 8px;
+  cursor: pointer;
+}
