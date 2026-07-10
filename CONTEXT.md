@@ -18,7 +18,7 @@
 - **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。
 - **边缘认证（Edge Auth）** — Cloudflare Access 在 CF 边缘完成的身份验证；未认证流量不触达 Hub。
 - **应用层底线（App-layer Floor）** — Hub 内写死、不可配置关闭的最低认证：长随机 token 校验 + Origin 白名单。
-- **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab / 数字）。没有它，Claude Code TUI 在手机上不可操作。
+- **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab）。没有它，Claude Code TUI 在手机上不可操作。
 - **headless 会话** — 二期的结构化会话类型（`claude -p --output-format stream-json` / `codex exec --json`），聊天 UI 与 IM 接入的数据源。明确不从 PTY 流中刮取对话。
 
 ## 架构（一期）

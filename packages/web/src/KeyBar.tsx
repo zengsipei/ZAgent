@@ -13,17 +13,7 @@ export type KeyId =
   | "up"
   | "down"
   | "left"
-  | "right"
-  | "1"
-  | "2"
-  | "3"
-  | "4"
-  | "5"
-  | "6"
-  | "7"
-  | "8"
-  | "9"
-  | "0";
+  | "right";
 
 /** Ctrl 合成：可合成的字符返回控制字节，不可合成返回 null（调用方原样发送并保持粘滞）。 */
 export function composeCtrl(ch: string): string | null {
@@ -70,15 +60,6 @@ export function keySequence(
         return `\x1b[1;5${letter}`;
       }
       return opts.applicationCursor ? `\x1bO${letter}` : `\x1b[${letter}`;
-    }
-    default: {
-      if (opts.ctrl) {
-        const composed = composeCtrl(id);
-        if (composed !== null) {
-          return composed;
-        }
-      }
-      return id;
     }
   }
 }
@@ -180,8 +161,6 @@ const ARROW_KEYS: ReadonlyArray<{ id: KeyId; label: string; aria: string }> = [
   { id: "right", label: "→", aria: "右方向键，长按连发" },
 ];
 
-const DIGIT_KEYS: ReadonlyArray<KeyId> = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
-
 const CTRL_ARIA: Record<CtrlState, string> = {
   off: "Ctrl 修饰键",
   once: "Ctrl 修饰键，已粘滞，下一个键合成 Ctrl 组合",
@@ -263,18 +242,6 @@ export function KeyBar({ ctrl, disabled, onCtrlTap, onKey }: KeyBarProps) {
               repeat
               disabled={disabled}
               onTrigger={() => onKey(key.id)}
-            />
-          ))}
-        </div>
-        <div className="key-group">
-          {DIGIT_KEYS.map((digit) => (
-            <KeyCap
-              key={digit}
-              label={digit}
-              ariaLabel={`数字 ${digit}`}
-              className="key-cap--digit"
-              disabled={disabled}
-              onTrigger={() => onKey(digit)}
             />
           ))}
         </div>

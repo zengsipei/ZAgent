@@ -179,11 +179,6 @@ body {
   font-size: 0.9375rem;
 }
 
-.key-cap--digit {
-  padding: 0;
-  font-variant-numeric: tabular-nums;
-}
-
 /* Ctrl 粘滞态是全界面唯一的 teal 时刻：强调色只用于状态 */
 .key-cap--ctrl[data-state="once"] {
   background: var(--accent-dim);

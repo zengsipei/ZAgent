@@ -10,7 +10,7 @@ product
 
 ## Product Purpose
 
-ZAgent 是远程驱动本地编程 CLI 的伪终端 PWA：xterm.js 终端页 + 移动端辅助键条（Esc / Tab / Ctrl / 方向 / Shift+Tab / 数字），经 WS 信封协议连接容器内的 Hub。成功的标准是：在手机上能真正操作 Claude Code 的全屏 TUI——不断线、不丢画面、按键够得着、看得清。它是给自己用的工具，不需要说服任何人，只需要每次打开都好用。
+ZAgent 是远程驱动本地编程 CLI 的伪终端 PWA：xterm.js 终端页 + 移动端辅助键条（Esc / Tab / Ctrl / 方向 / Shift+Tab），经 WS 信封协议连接容器内的 Hub。成功的标准是：在手机上能真正操作 Claude Code 的全屏 TUI——不断线、不丢画面、按键够得着、看得清。它是给自己用的工具，不需要说服任何人，只需要每次打开都好用。
 
 ## Brand Personality
 

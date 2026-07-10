@@ -15,7 +15,8 @@ import {
 
 import { KeyBar, composeCtrl, keySequence, type CtrlState, type KeyId } from "./KeyBar.js";
 
-const HUB_WS_URL = "ws://127.0.0.1:7433/ws";
+// WS 走同源 /ws：开发时由 vite 代理到环回 Hub，生产走隧道同样是同源形态
+const HUB_WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
 
 const TERMINAL_FONT =
   'ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace';
