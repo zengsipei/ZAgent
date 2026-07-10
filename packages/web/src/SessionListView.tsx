@@ -34,12 +34,15 @@ export function SessionListView({
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [template, setTemplate] = useState("claude");
+  const [template, setTemplate] = useState<string | null>(null);
+  const [customArgs, setCustomArgs] = useState("");
   const [cwdChoice, setCwdChoice] = useState("");
   const [customCwd, setCustomCwd] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
+  // created 只对自己发起的 create 有效：用 ref 而非 state，避免闭包读到旧值
+  const creatingRef = useRef(false);
 
   useEffect(() => {
     const ws = new WebSocket(`${HUB_WS_URL}?token=${encodeURIComponent(token)}`);
@@ -53,13 +56,18 @@ export function SessionListView({
         setConnected(true);
         setHello({ templates: message.payload.templates, cwds: message.payload.cwds });
         setSessions(message.payload.sessions);
+        setTemplate((prev) => prev ?? message.payload.templates[0]?.id ?? null);
         setCwdChoice((prev) => (prev === "" ? (message.payload.cwds[0] ?? CUSTOM_CWD) : prev));
       } else if (message.type === "sessions") {
         setSessions(message.payload.sessions);
       } else if (message.type === "created") {
-        // 自己发起的 create 成功：直接进入终端页
-        onOpenRef.current(message.payload.session.id);
+        // 只响应自己发起的 create（Hub 只回给发起连接，这里再守一层）
+        if (creatingRef.current) {
+          creatingRef.current = false;
+          onOpenRef.current(message.payload.session.id);
+        }
       } else if (message.type === "error") {
+        creatingRef.current = false;
         setCreating(false);
         setError(message.payload.message);
       }
@@ -83,6 +91,9 @@ export function SessionListView({
 
   function handleCreate(event: React.FormEvent): void {
     event.preventDefault();
+    if (template === null) {
+      return;
+    }
     const cwd = cwdChoice === CUSTOM_CWD ? customCwd.trim() : cwdChoice;
     if (cwd === "") {
       setError("请填写工作目录");
@@ -90,7 +101,13 @@ export function SessionListView({
     }
     setError(null);
     setCreating(true);
-    sendControl({ channel: CONTROL_CHANNEL, type: "create", payload: { template, cwd } });
+    creatingRef.current = true;
+    const args = customArgs.trim();
+    sendControl({
+      channel: CONTROL_CHANNEL,
+      type: "create",
+      payload: args === "" ? { template, cwd } : { template, cwd, args: args.split(/\s+/) },
+    });
   }
 
   function handleKill(sessionId: string): void {
@@ -120,7 +137,8 @@ export function SessionListView({
             >
               <span className="session-item-command">{s.command}</span>
               <span className="session-item-meta">
-                {s.cwd} · {s.status === "running" ? "运行中" : `已退出（exit ${s.exitCode ?? "?"}）`}
+                {s.template} · {s.cwd} ·{" "}
+                {s.status === "running" ? "运行中" : `已退出（exit ${s.exitCode ?? "?"}）`}
               </span>
             </button>
             <button
@@ -151,6 +169,15 @@ export function SessionListView({
             </button>
           ))}
         </div>
+        <label>
+          附加参数（可选，覆盖模板默认参数）
+          <input
+            type="text"
+            placeholder="--resume 等，空格分隔"
+            value={customArgs}
+            onChange={(e) => setCustomArgs(e.target.value)}
+          />
+        </label>
         <label>
           工作目录
           <select value={cwdChoice} onChange={(e) => setCwdChoice(e.target.value)}>

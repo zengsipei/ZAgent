@@ -77,7 +77,7 @@ body {
 
 .status-back {
   flex: none;
-  height: 30px;
+  height: 44px;
   padding: 0 var(--space-sm);
   margin-right: var(--space-xs);
   background: var(--cap);
@@ -452,6 +452,7 @@ body {
 .session-item-kill {
   flex: none;
   min-width: 56px;
+  min-height: 44px;
   background: var(--surface);
   color: var(--danger);
   border: 1px solid var(--border);
@@ -487,7 +488,7 @@ body {
 
 .session-create-templates button {
   flex: 1;
-  height: 40px;
+  height: 44px;
   background: var(--cap);
   color: var(--ink);
   border: 1px solid transparent;
@@ -513,7 +514,7 @@ body {
 
 .session-create select,
 .session-create input {
-  height: 40px;
+  height: 44px;
   padding: 0 var(--space-md);
   font-family: var(--font-mono);
   font-size: 0.875rem;

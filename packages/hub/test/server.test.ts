@@ -220,12 +220,17 @@ describe("control 通道会话管理", () => {
     client.close();
   }, 30000);
 
-  it("未知模板 → error 信封，连接继续可用", async () => {
+  it("未知模板 / 坏 cwd → error 信封，连接继续可用", async () => {
     const client = new TestClient(wsUrl(TOKEN), ORIGIN);
     expect(await client.connect()).toBe(true);
 
     client.send(CONTROL_CHANNEL, "create", { template: "nope", cwd: process.cwd() });
-    await client.waitForControl<{ message: string }>("error");
+    await client.waitForControl<{ message: string }>("error", (p) => p.message.includes("模板"));
+
+    // Windows 上 node-pty 对坏 cwd 不同步抛错，Hub 必须前置校验而不是发 created
+    client.send(CONTROL_CHANNEL, "create", { template: "bash", cwd: "/no/such/dir/zagent" });
+    await client.waitForControl<{ message: string }>("error", (p) => p.message.includes("工作目录"));
+    expect(client.envelopes.some((e) => e.type === "created")).toBe(false);
 
     client.send(CONTROL_CHANNEL, "list", {});
     await client.waitFor(() => client.envelopes.some((e) => e.type === "sessions"));

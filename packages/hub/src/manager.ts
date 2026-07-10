@@ -1,19 +1,15 @@
 // 会话管理器：Hub 的领域模型（ADR-0004）。多会话并存，每个会话是 {id, type, 命令模板, cwd}。
 // 只管理 Hub 自己 spawn 的会话，不接管外部已有终端（ADR-0001）。
 
-import type { SessionInfo, SessionTemplate } from "@zagent/protocol";
+import { existsSync, statSync } from "node:fs";
+
+import type { CreatePayload, SessionInfo, SessionTemplate } from "@zagent/protocol";
 
 import { PtySession } from "./session.js";
 
 export interface ManagedSession {
   session: PtySession;
   info: SessionInfo;
-}
-
-export interface CreateOptions {
-  template: string;
-  cwd: string;
-  args?: string[];
 }
 
 /** 命令模板：三种模板走同一条 PTY spawn 路径（PTY 模式天然命令无关）。 */
@@ -34,11 +30,17 @@ export class SessionManager {
     this.templates = new Map(templates.map((t) => [t.id, t]));
   }
 
-  /** 模板不存在时抛错；spawn 失败由 node-pty 抛出，由调用方转成 error 信封。 */
-  create(options: CreateOptions): ManagedSession {
+  /**
+   * 模板不存在或 cwd 不是目录时抛错（node-pty 在 Windows 上对坏 cwd 不同步抛错，
+   * 会静默给出一个立即退出的死终端，所以这里前置校验）；由调用方转成 error 信封。
+   */
+  create(options: CreatePayload): ManagedSession {
     const template = this.templates.get(options.template);
     if (template === undefined) {
       throw new Error(`未知的命令模板：${options.template}`);
+    }
+    if (!existsSync(options.cwd) || !statSync(options.cwd).isDirectory()) {
+      throw new Error(`工作目录不存在：${options.cwd}`);
     }
     const args = options.args ?? template.args;
     const id = `s${++this.counter}`;

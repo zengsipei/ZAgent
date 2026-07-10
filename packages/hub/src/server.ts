@@ -13,6 +13,7 @@ import {
   parseClientMessage,
   serializeEnvelope,
   sessionChannel,
+  sessionIdOf,
   utf8ToBase64,
   type HubMessage,
 } from "@zagent/protocol";
@@ -54,32 +55,34 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     }
   }
 
+  function sendToAttached(sessionId: string, message: HubMessage): void {
+    for (const [ws, attached] of attachments) {
+      if (attached.has(sessionId)) {
+        send(ws, message);
+      }
+    }
+  }
+
+  function sendError(ws: WebSocket, message: string): void {
+    send(ws, { channel: CONTROL_CHANNEL, type: "error", payload: { message } });
+  }
+
   // 会话创建时挂一次输出/退出转发：输出发给当时 attach 的连接，退出后广播快照
   function wireSession(managed: ManagedSession): void {
     const { session } = managed;
     session.onData((data) => {
-      const message: HubMessage = {
+      sendToAttached(session.id, {
         channel: sessionChannel(session.id),
         type: "output",
         payload: { data: utf8ToBase64(data) },
-      };
-      for (const [ws, attached] of attachments) {
-        if (attached.has(session.id)) {
-          send(ws, message);
-        }
-      }
+      });
     });
     session.onExit((exitCode) => {
-      const message: HubMessage = {
+      sendToAttached(session.id, {
         channel: sessionChannel(session.id),
         type: "exit",
         payload: { exitCode },
-      };
-      for (const [ws, attached] of attachments) {
-        if (attached.has(session.id)) {
-          send(ws, message);
-        }
-      }
+      });
       broadcastSessions();
     });
   }
@@ -114,8 +117,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
         const attached = attachments.get(ws)!;
 
         if (message.type === "input") {
-          const sessionId = message.channel.slice("session:".length);
-          const managed = manager.get(sessionId);
+          const managed = manager.get(sessionIdOf(message.channel));
           if (managed !== undefined && !managed.session.exited) {
             managed.session.write(base64ToUtf8(message.payload.data));
           }
@@ -136,11 +138,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
             try {
               managed = manager.create(message.payload);
             } catch (err) {
-              send(ws, {
-                channel: CONTROL_CHANNEL,
-                type: "error",
-                payload: { message: err instanceof Error ? err.message : "创建会话失败" },
-              });
+              sendError(ws, err instanceof Error ? err.message : "创建会话失败");
               return;
             }
             wireSession(managed);
@@ -150,11 +148,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
           }
           case "kill": {
             if (!manager.kill(message.payload.sessionId)) {
-              send(ws, {
-                channel: CONTROL_CHANNEL,
-                type: "error",
-                payload: { message: `会话不存在：${message.payload.sessionId}` },
-              });
+              sendError(ws, `会话不存在：${message.payload.sessionId}`);
               return;
             }
             // 运行中会话的退出经由 onExit 广播；已退出会话被移除，这里直接广播快照
@@ -164,11 +158,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
           case "attach": {
             const managed = manager.get(message.payload.sessionId);
             if (managed === undefined) {
-              send(ws, {
-                channel: CONTROL_CHANNEL,
-                type: "error",
-                payload: { message: `会话不存在：${message.payload.sessionId}` },
-              });
+              sendError(ws, `会话不存在：${message.payload.sessionId}`);
               return;
             }
             attached.add(managed.session.id);

@@ -17,6 +17,11 @@ export function isSessionChannel(channel: string): channel is SessionChannel {
   return channel.startsWith("session:") && channel.length > "session:".length;
 }
 
+/** sessionChannel 的反解：从会话通道名取回 sessionId。 */
+export function sessionIdOf(channel: SessionChannel): string {
+  return channel.slice("session:".length);
+}
+
 // ---------------------------------------------------------------------------
 // 信封与消息类型
 // ---------------------------------------------------------------------------
