@@ -11,3 +11,7 @@ The five canonical triage roles use their default names (`needs-triage`, `needs-
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Design Context
+
+Frontend (`packages/web`) design context lives in `packages/web/PRODUCT.md` (register, users, brand personality, anti-references, design principles) and `packages/web/DESIGN.md` (seed visual spec: Restrained dark + teal accent, single sans + terminal mono). Read both before any UI design work.

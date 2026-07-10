@@ -1,52 +1,310 @@
+/* ---------------------------------------------------------------------------
+ * ZAgent 设计 token（DESIGN.md「无声驾驶舱」）
+ * 深色微 teal 中性色 + 单一 teal 强调 ≤10%；平坦无阴影，深度靠分层。
+ * ------------------------------------------------------------------------- */
+
+:root {
+  --bg: oklch(0.15 0.01 200); /* xterm theme 里的 sRGB 近似：#0d1517 */
+  --surface: oklch(0.2 0.012 200);
+  --cap: oklch(0.26 0.014 200);
+  --cap-press: oklch(0.34 0.02 200);
+  --border: oklch(0.31 0.014 200);
+  --ink: oklch(0.93 0.006 200);
+  --muted: oklch(0.7 0.02 200);
+  --accent: oklch(0.8 0.13 190);
+  --accent-ink: oklch(0.17 0.03 190);
+  --accent-dim: oklch(0.3 0.06 190);
+  --danger: oklch(0.72 0.16 25);
+
+  --font-ui:
+    system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 html,
 body,
 #root {
   height: 100%;
   margin: 0;
-  background: #1e1e1e;
-  color: #ccc;
-  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
 }
 
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* --app-height 由 visualViewport 驱动：键盘弹起时整个应用收缩，键条贴在键盘上方 */
 .app {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: var(--app-height, 100dvh);
 }
 
+/* ---------------------------------------------------------------------------
+ * 状态条
+ * ------------------------------------------------------------------------- */
+
 .status-bar {
-  padding: 4px 12px;
-  font-size: 12px;
-  background: #2d2d2d;
-  border-bottom: 1px solid #444;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 6px var(--space-md);
+  padding-top: max(6px, env(safe-area-inset-top));
+  font-size: 0.75rem;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   flex: none;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.status-bar[data-tone="ok"] .status-dot {
+  background: var(--accent);
+}
+
+.status-bar[data-tone="error"] {
+  color: var(--ink);
+}
+
+.status-bar[data-tone="error"] .status-dot {
+  background: var(--danger);
 }
 
 .terminal-container {
   flex: 1;
   min-height: 0;
-  padding: 4px;
+  padding: var(--space-xs) 0 0 var(--space-sm);
 }
+
+/* ---------------------------------------------------------------------------
+ * 辅助键条 —— 移动端常驻，桌面（悬停 + 精确指针）隐藏
+ * ------------------------------------------------------------------------- */
+
+.key-bar {
+  position: relative;
+  flex: none;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .key-bar {
+    display: none;
+  }
+}
+
+.key-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.key-bar-row::-webkit-scrollbar {
+  display: none;
+}
+
+.key-group {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.key-cap {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: var(--cap);
+  color: var(--ink);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: 500 0.8125rem/1 var(--font-ui);
+  letter-spacing: 0.01em;
+  touch-action: pan-x;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background 150ms var(--ease-out),
+    color 150ms var(--ease-out),
+    transform 150ms var(--ease-out);
+}
+
+.key-cap[data-pressed] {
+  background: var(--cap-press);
+  transform: scale(0.94);
+}
+
+.key-cap:disabled {
+  opacity: 0.4;
+}
+
+.key-cap:focus {
+  outline: none;
+}
+
+.key-cap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.key-cap--arrow {
+  font-size: 0.9375rem;
+}
+
+.key-cap--digit {
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ctrl 粘滞态是全界面唯一的 teal 时刻：强调色只用于状态 */
+.key-cap--ctrl[data-state="once"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.key-cap--ctrl[data-state="lock"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* 横滑两端渐隐：还有键在画面外时提示 */
+.key-bar::before,
+.key-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms linear;
+}
+
+.key-bar::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface), transparent);
+}
+
+.key-bar::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface), transparent);
+}
+
+.key-bar[data-fade-start]::before {
+  opacity: 1;
+}
+
+.key-bar[data-fade-end]::after {
+  opacity: 1;
+}
+
+/* 横屏矮视口：压键帽高度，把空间还给终端 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .key-cap {
+    height: 38px;
+  }
+
+  .key-bar-row {
+    padding-top: var(--space-xs);
+    padding-bottom: var(--space-xs);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .key-cap {
+    transition: none;
+  }
+
+  .key-cap[data-pressed] {
+    transform: none;
+  }
+
+  .key-bar::before,
+  .key-bar::after {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Token 表单
+ * ------------------------------------------------------------------------- */
 
 .token-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-md);
   max-width: 480px;
   margin: 20vh auto 0;
-  padding: 0 16px;
+  padding: 0 var(--space-lg);
+}
+
+.token-form label {
+  font-size: 0.875rem;
+  color: var(--ink);
 }
 
 .token-form input {
-  padding: 8px;
-  font-family: monospace;
-  background: #2d2d2d;
-  color: #eee;
-  border: 1px solid #555;
-  border-radius: 4px;
+  height: 44px;
+  padding: 0 var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.token-form input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .token-form button {
-  padding: 8px;
+  height: 44px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 500 0.9375rem var(--font-ui);
   cursor: pointer;
+  transition: background 150ms var(--ease-out);
+}
+
+.token-form button:active {
+  background: oklch(0.72 0.12 190);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .token-form button {
+    transition: none;
+  }
 }
