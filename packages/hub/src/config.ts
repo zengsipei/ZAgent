@@ -1,5 +1,7 @@
 // Hub 配置。监听地址不在配置项里：仅监听 loopback 是 ADR-0003 的定局，写死为常量。
 
+import { homedir } from "node:os";
+
 export const HUB_HOST = "127.0.0.1";
 
 export const DEFAULT_PORT = 7433;
@@ -13,6 +15,8 @@ export interface HubConfig {
   allowedOrigins: ReadonlySet<string>;
   port: number;
   shell: string;
+  /** 新建会话的 cwd 预设列表（前端下拉），手输路径兜底。 */
+  cwds: string[];
 }
 
 export function loadConfig(env: Record<string, string | undefined>): HubConfig {
@@ -42,10 +46,22 @@ export function loadConfig(env: Record<string, string | undefined>): HubConfig {
     throw new Error(`ZAGENT_PORT 不是合法端口：${env["ZAGENT_PORT"]}`);
   }
 
+  const cwds: string[] = [];
+  for (const raw of (env["ZAGENT_CWDS"] ?? "").split(",")) {
+    const cwd = raw.trim();
+    if (cwd !== "" && !cwds.includes(cwd)) {
+      cwds.push(cwd);
+    }
+  }
+  if (cwds.length === 0) {
+    cwds.push(homedir());
+  }
+
   return {
     token,
     allowedOrigins,
     port,
     shell: env["ZAGENT_SHELL"] ?? "bash",
+    cwds,
   };
 }

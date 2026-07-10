@@ -14,9 +14,7 @@ import {
 } from "@zagent/protocol";
 
 import { KeyBar, composeCtrl, keySequence, type CtrlState, type KeyId } from "./KeyBar.js";
-
-// WS 走同源 /ws：开发时由 vite 代理到环回 Hub，生产走隧道同样是同源形态
-const HUB_WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+import { HUB_WS_URL } from "./hubUrl.js";
 
 const TERMINAL_FONT =
   'ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace';
@@ -32,7 +30,15 @@ const TERMINAL_THEME = {
 
 type StatusTone = "info" | "ok" | "error";
 
-export function TerminalView({ token }: { token: string }) {
+export function TerminalView({
+  token,
+  sessionId,
+  onBack,
+}: {
+  token: string;
+  sessionId: string;
+  onBack: () => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("连接中…");
   const [tone, setTone] = useState<StatusTone>("info");
@@ -89,7 +95,6 @@ export function TerminalView({ token }: { token: string }) {
     termRef.current = term;
 
     const ws = new WebSocket(`${HUB_WS_URL}?token=${encodeURIComponent(token)}`);
-    let sessionId: string | null = null;
 
     function sendMessage(message: ClientMessage): void {
       if (ws.readyState === WebSocket.OPEN) {
@@ -98,33 +103,31 @@ export function TerminalView({ token }: { token: string }) {
     }
 
     function sendInput(data: string): void {
-      if (sessionId !== null) {
-        sendMessage({
-          channel: sessionChannel(sessionId),
-          type: "input",
-          payload: { data: utf8ToBase64(data) },
-        });
-      }
+      sendMessage({
+        channel: sessionChannel(sessionId),
+        type: "input",
+        payload: { data: utf8ToBase64(data) },
+      });
     }
     sendInputRef.current = sendInput;
 
     function sendResize(): void {
-      if (sessionId !== null) {
-        sendMessage({
-          channel: CONTROL_CHANNEL,
-          type: "resize",
-          payload: { sessionId, cols: term.cols, rows: term.rows },
-        });
-      }
+      sendMessage({
+        channel: CONTROL_CHANNEL,
+        type: "resize",
+        payload: { sessionId, cols: term.cols, rows: term.rows },
+      });
     }
 
+    ws.onopen = () => {
+      sendMessage({ channel: CONTROL_CHANNEL, type: "attach", payload: { sessionId } });
+    };
     ws.onmessage = (event) => {
       const message = parseHubMessage(String(event.data));
       if (message === null) {
         return;
       }
-      if (message.type === "attached") {
-        sessionId = message.payload.sessionId;
+      if (message.type === "attached" && message.payload.sessionId === sessionId) {
         setStatus(`已附加会话 ${sessionId}`);
         setTone("ok");
         setAttached(true);
@@ -132,11 +135,17 @@ export function TerminalView({ token }: { token: string }) {
         term.focus();
         return;
       }
-      if (sessionId !== null && message.channel === sessionChannel(sessionId)) {
+      if (message.type === "error") {
+        setStatus(message.payload.message);
+        setTone("error");
+        setAttached(false);
+        return;
+      }
+      if (message.channel === sessionChannel(sessionId)) {
         if (message.type === "output") {
           term.write(base64ToBytes(message.payload.data));
-        } else {
-          setStatus(`会话已退出（exit ${message.payload.exitCode}），刷新页面重开`);
+        } else if (message.type === "exit") {
+          setStatus(`会话已退出（exit ${message.payload.exitCode}），返回列表重开`);
           setTone("error");
           setAttached(false);
         }
@@ -181,7 +190,7 @@ export function TerminalView({ token }: { token: string }) {
       termRef.current = null;
       sendInputRef.current = null;
     };
-  }, [token]);
+  }, [token, sessionId]);
 
   function handleKey(id: KeyId): void {
     const send = sendInputRef.current;
@@ -205,6 +214,9 @@ export function TerminalView({ token }: { token: string }) {
   return (
     <div className="app">
       <div className="status-bar" data-tone={tone}>
+        <button type="button" className="status-back" onClick={onBack} aria-label="返回会话列表">
+          ‹ 列表
+        </button>
         <span className="status-dot" aria-hidden="true" />
         {status}
       </div>

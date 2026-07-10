@@ -136,3 +136,119 @@ describe("parseHubMessage（客户端入站消息校验）", () => {
     }
   });
 });
+
+describe("parseClientMessage：会话管理消息", () => {
+  const raw = (type: string, payload: unknown) =>
+    serializeEnvelope({ channel: CONTROL_CHANNEL, type, payload });
+
+  it("list：payload 为空对象", () => {
+    expect(parseClientMessage(raw("list", {}))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "list",
+      payload: {},
+    });
+  });
+
+  it("create：template + cwd，args 可选", () => {
+    expect(parseClientMessage(raw("create", { template: "bash", cwd: "/home/me" }))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "create",
+      payload: { template: "bash", cwd: "/home/me" },
+    });
+    expect(
+      parseClientMessage(raw("create", { template: "claude", cwd: "/w", args: ["-c"] })),
+    ).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "create",
+      payload: { template: "claude", cwd: "/w", args: ["-c"] },
+    });
+  });
+
+  it("create：拒绝缺字段与非法 args", () => {
+    expect(parseClientMessage(raw("create", { template: "bash" }))).toBeNull();
+    expect(parseClientMessage(raw("create", { cwd: "/w" }))).toBeNull();
+    expect(parseClientMessage(raw("create", { template: "bash", cwd: "/w", args: [1] }))).toBeNull();
+  });
+
+  it("kill / attach / detach：sessionId 必填字符串", () => {
+    for (const type of ["kill", "attach", "detach"] as const) {
+      expect(parseClientMessage(raw(type, { sessionId: "s1" }))).toEqual({
+        channel: CONTROL_CHANNEL,
+        type,
+        payload: { sessionId: "s1" },
+      });
+      expect(parseClientMessage(raw(type, {}))).toBeNull();
+      expect(parseClientMessage(raw(type, { sessionId: 3 }))).toBeNull();
+    }
+  });
+
+  it("会话管理消息只认 control 通道", () => {
+    expect(
+      parseClientMessage(
+        serializeEnvelope({ channel: sessionChannel("s1"), type: "kill", payload: { sessionId: "s1" } }),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("parseHubMessage：会话管理消息", () => {
+  const session = {
+    id: "s1",
+    type: "pty",
+    template: "bash",
+    command: "bash",
+    cwd: "/home/me",
+    status: "running",
+    createdAt: 1751900000000,
+  };
+  const template = { id: "bash", name: "Bash", command: "bash", args: [] };
+  const raw = (type: string, payload: unknown) =>
+    serializeEnvelope({ channel: CONTROL_CHANNEL, type, payload });
+
+  it("hello：templates + cwds + sessions", () => {
+    const payload = { templates: [template], cwds: ["/home/me"], sessions: [session] };
+    expect(parseHubMessage(raw("hello", payload))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "hello",
+      payload,
+    });
+  });
+
+  it("hello：拒绝形状不对的 templates/sessions", () => {
+    expect(parseHubMessage(raw("hello", { templates: [{}], cwds: [], sessions: [] }))).toBeNull();
+    expect(
+      parseHubMessage(raw("hello", { templates: [], cwds: [], sessions: [{ id: "x" }] })),
+    ).toBeNull();
+  });
+
+  it("sessions：会话快照广播", () => {
+    expect(parseHubMessage(raw("sessions", { sessions: [session] }))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "sessions",
+      payload: { sessions: [session] },
+    });
+  });
+
+  it("sessions：接受 exited + exitCode", () => {
+    const exited = { ...session, status: "exited", exitCode: 0 };
+    expect(parseHubMessage(raw("sessions", { sessions: [exited] }))).not.toBeNull();
+  });
+
+  it("created：单个会话", () => {
+    expect(parseHubMessage(raw("created", { session }))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "created",
+      payload: { session },
+    });
+    expect(parseHubMessage(raw("created", { session: { id: "x" } }))).toBeNull();
+  });
+
+  it("error：message 字符串", () => {
+    expect(parseHubMessage(raw("error", { message: "no such template" }))).toEqual({
+      channel: CONTROL_CHANNEL,
+      type: "error",
+      payload: { message: "no such template" },
+    });
+    expect(parseHubMessage(raw("error", {}))).toBeNull();
+  });
+});

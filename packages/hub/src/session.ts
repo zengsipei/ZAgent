@@ -9,11 +9,15 @@ import type { SessionType } from "@zagent/protocol";
 
 export interface PtySessionOptions {
   id: string;
-  shell: string;
+  command: string;
+  args?: string[];
   cwd: string;
   cols?: number;
   rows?: number;
 }
+
+// attach 重放缓冲上限（ADR-0005：数 MB 级 ring buffer，按 UTF-16 字符近似计）
+const RING_BUFFER_MAX_CHARS = 1024 * 1024;
 
 export class PtySession {
   readonly id: string;
@@ -21,10 +25,12 @@ export class PtySession {
   exited = false;
 
   private readonly pty: pty.IPty;
+  private readonly ringChunks: string[] = [];
+  private ringLength = 0;
 
   constructor(options: PtySessionOptions) {
     this.id = options.id;
-    this.pty = pty.spawn(resolveExecutable(options.shell), [], {
+    this.pty = pty.spawn(resolveExecutable(options.command), options.args ?? [], {
       name: "xterm-256color",
       cols: options.cols ?? 80,
       rows: options.rows ?? 24,
@@ -34,6 +40,18 @@ export class PtySession {
     this.pty.onExit(() => {
       this.exited = true;
     });
+    this.pty.onData((data) => {
+      this.ringChunks.push(data);
+      this.ringLength += data.length;
+      while (this.ringLength > RING_BUFFER_MAX_CHARS && this.ringChunks.length > 1) {
+        this.ringLength -= this.ringChunks.shift()!.length;
+      }
+    });
+  }
+
+  /** attach 时重放的最近输出（ring buffer 内容拼接）。 */
+  replayData(): string {
+    return this.ringChunks.join("");
   }
 
   onData(listener: (data: string) => void): void {

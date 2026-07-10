@@ -30,6 +30,30 @@ export interface Envelope {
 /** 会话类型（ADR-0004：一期仅 pty，二期新增 headless）。 */
 export type SessionType = "pty";
 
+/** 命令模板：新建会话时的可选起点（claude / codex / bash 等），由 Hub 下发。 */
+export interface SessionTemplate {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+}
+
+export type SessionStatus = "running" | "exited";
+
+/** 会话元数据：Hub 领域模型「会话管理器」中的一条记录（ADR-0004）。 */
+export interface SessionInfo {
+  id: string;
+  type: SessionType;
+  /** 创建时使用的模板 id。 */
+  template: string;
+  /** 实际 spawn 的命令行（含参数），供列表展示。 */
+  command: string;
+  cwd: string;
+  status: SessionStatus;
+  exitCode?: number;
+  createdAt: number;
+}
+
 /** data 为 base64 编码的 PTY 输入字节。 */
 export interface InputPayload {
   data: string;
@@ -55,14 +79,53 @@ export interface AttachedPayload {
   sessionType: SessionType;
 }
 
-/** 客户端 → Hub。会话管理（含 resize）走 control 通道，输入输出流走 session 通道（ADR-0004）。 */
+export interface CreatePayload {
+  template: string;
+  cwd: string;
+  /** 覆盖模板默认参数（“可自定义”）；缺省用模板自带 args。 */
+  args?: string[];
+}
+
+export interface SessionRefPayload {
+  sessionId: string;
+}
+
+/** 连接建立后 Hub 主动下发：模板、cwd 预设与当前会话快照。 */
+export interface HelloPayload {
+  templates: SessionTemplate[];
+  cwds: string[];
+  sessions: SessionInfo[];
+}
+
+export interface SessionsPayload {
+  sessions: SessionInfo[];
+}
+
+export interface CreatedPayload {
+  session: SessionInfo;
+}
+
+export interface ErrorPayload {
+  message: string;
+}
+
+/** 客户端 → Hub。会话管理全部走 control 通道信封，不新增 REST 端点（ADR-0004）。 */
 export type ClientMessage =
   | { channel: SessionChannel; type: "input"; payload: InputPayload }
-  | { channel: typeof CONTROL_CHANNEL; type: "resize"; payload: ResizePayload };
+  | { channel: typeof CONTROL_CHANNEL; type: "resize"; payload: ResizePayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "list"; payload: Record<string, never> }
+  | { channel: typeof CONTROL_CHANNEL; type: "create"; payload: CreatePayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "kill"; payload: SessionRefPayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "attach"; payload: SessionRefPayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "detach"; payload: SessionRefPayload };
 
 /** Hub → 客户端。 */
 export type HubMessage =
+  | { channel: typeof CONTROL_CHANNEL; type: "hello"; payload: HelloPayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "sessions"; payload: SessionsPayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "created"; payload: CreatedPayload }
   | { channel: typeof CONTROL_CHANNEL; type: "attached"; payload: AttachedPayload }
+  | { channel: typeof CONTROL_CHANNEL; type: "error"; payload: ErrorPayload }
   | { channel: SessionChannel; type: "output"; payload: OutputPayload }
   | { channel: SessionChannel; type: "exit"; payload: ExitPayload };
 
@@ -119,6 +182,33 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     }
     return { channel: CONTROL_CHANNEL, type: "resize", payload: { sessionId, cols, rows } };
   }
+  if (envelope.channel === CONTROL_CHANNEL && envelope.type === "list") {
+    return { channel: CONTROL_CHANNEL, type: "list", payload: {} };
+  }
+  if (envelope.channel === CONTROL_CHANNEL && envelope.type === "create") {
+    const { template, cwd, args } = payload as Record<string, unknown>;
+    if (typeof template !== "string" || typeof cwd !== "string") {
+      return null;
+    }
+    if (args !== undefined && !isStringArray(args)) {
+      return null;
+    }
+    return {
+      channel: CONTROL_CHANNEL,
+      type: "create",
+      payload: args === undefined ? { template, cwd } : { template, cwd, args },
+    };
+  }
+  if (
+    envelope.channel === CONTROL_CHANNEL &&
+    (envelope.type === "kill" || envelope.type === "attach" || envelope.type === "detach")
+  ) {
+    const { sessionId } = payload as Record<string, unknown>;
+    if (typeof sessionId !== "string") {
+      return null;
+    }
+    return { channel: CONTROL_CHANNEL, type: envelope.type, payload: { sessionId } };
+  }
   return null;
 }
 
@@ -139,6 +229,40 @@ export function parseHubMessage(raw: string): HubMessage | null {
     }
     return { channel: CONTROL_CHANNEL, type: "attached", payload: { sessionId, sessionType } };
   }
+  if (envelope.type === "hello" && envelope.channel === CONTROL_CHANNEL) {
+    const { templates, cwds, sessions } = payload as Record<string, unknown>;
+    if (
+      !Array.isArray(templates) ||
+      !templates.every(isSessionTemplate) ||
+      !isStringArray(cwds) ||
+      !Array.isArray(sessions) ||
+      !sessions.every(isSessionInfo)
+    ) {
+      return null;
+    }
+    return { channel: CONTROL_CHANNEL, type: "hello", payload: { templates, cwds, sessions } };
+  }
+  if (envelope.type === "sessions" && envelope.channel === CONTROL_CHANNEL) {
+    const { sessions } = payload as Record<string, unknown>;
+    if (!Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
+      return null;
+    }
+    return { channel: CONTROL_CHANNEL, type: "sessions", payload: { sessions } };
+  }
+  if (envelope.type === "created" && envelope.channel === CONTROL_CHANNEL) {
+    const { session } = payload as Record<string, unknown>;
+    if (!isSessionInfo(session)) {
+      return null;
+    }
+    return { channel: CONTROL_CHANNEL, type: "created", payload: { session } };
+  }
+  if (envelope.type === "error" && envelope.channel === CONTROL_CHANNEL) {
+    const { message } = payload as Record<string, unknown>;
+    if (typeof message !== "string") {
+      return null;
+    }
+    return { channel: CONTROL_CHANNEL, type: "error", payload: { message } };
+  }
   if (envelope.type === "output" && isSessionChannel(envelope.channel)) {
     const { data } = payload as Record<string, unknown>;
     if (typeof data !== "string") {
@@ -158,6 +282,43 @@ export function parseHubMessage(raw: string): HubMessage | null {
 
 function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isSessionTemplate(value: unknown): value is SessionTemplate {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const { id, name, command, args } = value as Record<string, unknown>;
+  return (
+    typeof id === "string" &&
+    typeof name === "string" &&
+    typeof command === "string" &&
+    isStringArray(args)
+  );
+}
+
+function isSessionInfo(value: unknown): value is SessionInfo {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const { id, type, template, command, cwd, status, exitCode, createdAt } = value as Record<
+    string,
+    unknown
+  >;
+  return (
+    typeof id === "string" &&
+    type === "pty" &&
+    typeof template === "string" &&
+    typeof command === "string" &&
+    typeof cwd === "string" &&
+    (status === "running" || status === "exited") &&
+    (exitCode === undefined || typeof exitCode === "number") &&
+    typeof createdAt === "number"
+  );
 }
 
 // ---------------------------------------------------------------------------

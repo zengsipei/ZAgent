@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { SessionListView } from "./SessionListView.js";
 import { TerminalView } from "./TerminalView.js";
 
 const TOKEN_STORAGE_KEY = "zagent-token";
@@ -21,6 +22,8 @@ function resolveInitialToken(): string | null {
 export function App() {
   const [token, setToken] = useState<string | null>(resolveInitialToken);
   const [draft, setDraft] = useState("");
+  // null = 会话列表页，非 null = 该会话的终端页
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   if (token === null) {
     return (
@@ -47,5 +50,14 @@ export function App() {
     );
   }
 
-  return <TerminalView token={token} />;
+  if (activeSessionId === null) {
+    return <SessionListView token={token} onOpen={setActiveSessionId} />;
+  }
+  return (
+    <TerminalView
+      token={token}
+      sessionId={activeSessionId}
+      onBack={() => setActiveSessionId(null)}
+    />
+  );
 }

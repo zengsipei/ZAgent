@@ -1,4 +1,5 @@
-// Hub 服务器：WS upgrade 阶段做底线认证，连接即 attach 到硬编码会话 main。
+// Hub 服务器：WS upgrade 阶段做底线认证；会话管理（list/create/kill/attach）
+// 全部走 control 通道信封消息，不新增 REST 端点（ADR-0004）。
 // 仅监听 127.0.0.1（HUB_HOST 常量，见 ADR-0003 隧道无关设计）。
 
 import http from "node:http";
@@ -18,9 +19,7 @@ import {
 
 import { verifyUpgrade } from "./auth.js";
 import { HUB_HOST, type HubConfig } from "./config.js";
-import { PtySession } from "./session.js";
-
-const SESSION_ID = "main";
+import { SessionManager, buildTemplates, type ManagedSession } from "./manager.js";
 
 export interface RunningHub {
   port: number;
@@ -33,43 +32,56 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     res.writeHead(404).end();
   });
   const wss = new WebSocketServer({ noServer: true });
-  const clients = new Set<WebSocket>();
-  let session: PtySession | null = null;
+  const templates = buildTemplates(config.shell);
+  const manager = new SessionManager(templates);
+  // 每个连接各自 attach 的会话集合：输出只发给附加者，会话快照广播给所有连接
+  const attachments = new Map<WebSocket, Set<string>>();
 
-  function broadcast(message: HubMessage): void {
-    const raw = serializeEnvelope(message);
-    for (const client of clients) {
-      if (client.readyState === client.OPEN) {
-        client.send(raw);
-      }
+  function send(ws: WebSocket, message: HubMessage): void {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(serializeEnvelope(message));
     }
   }
 
-  // 会话退出后不复用：下一个连接触发重新 spawn，手动测试里输 exit 不会把 Hub 用死。
-  function ensureSession(): PtySession {
-    if (session === null || session.exited) {
-      const created = new PtySession({
-        id: SESSION_ID,
-        shell: config.shell,
-        cwd: process.cwd(),
-      });
-      created.onData((data) => {
-        broadcast({
-          channel: sessionChannel(SESSION_ID),
-          type: "output",
-          payload: { data: utf8ToBase64(data) },
-        });
-      });
-      created.onExit((exitCode) => {
-        broadcast({
-          channel: sessionChannel(SESSION_ID),
-          type: "exit",
-          payload: { exitCode },
-        });
-      });
-      session = created;
+  function broadcastSessions(): void {
+    const message: HubMessage = {
+      channel: CONTROL_CHANNEL,
+      type: "sessions",
+      payload: { sessions: manager.list() },
+    };
+    for (const ws of attachments.keys()) {
+      send(ws, message);
     }
-    return session;
+  }
+
+  // 会话创建时挂一次输出/退出转发：输出发给当时 attach 的连接，退出后广播快照
+  function wireSession(managed: ManagedSession): void {
+    const { session } = managed;
+    session.onData((data) => {
+      const message: HubMessage = {
+        channel: sessionChannel(session.id),
+        type: "output",
+        payload: { data: utf8ToBase64(data) },
+      };
+      for (const [ws, attached] of attachments) {
+        if (attached.has(session.id)) {
+          send(ws, message);
+        }
+      }
+    });
+    session.onExit((exitCode) => {
+      const message: HubMessage = {
+        channel: sessionChannel(session.id),
+        type: "exit",
+        payload: { exitCode },
+      };
+      for (const [ws, attached] of attachments) {
+        if (attached.has(session.id)) {
+          send(ws, message);
+        }
+      }
+      broadcastSessions();
+    });
   }
 
   server.on("upgrade", (req, socket, head) => {
@@ -85,35 +97,108 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   });
 
   wss.on("connection", (ws: WebSocket) => {
-    try {
-      clients.add(ws);
-      const attached = ensureSession();
-      ws.send(
-        serializeEnvelope({
-          channel: CONTROL_CHANNEL,
-          type: "attached",
-          payload: { sessionId: attached.id, sessionType: attached.type },
-        } satisfies HubMessage),
-      );
-    } catch (err) {
-      console.error("[hub] connection handler failed:", err);
-      ws.close();
-      return;
-    }
+    attachments.set(ws, new Set());
+    send(ws, {
+      channel: CONTROL_CHANNEL,
+      type: "hello",
+      payload: { templates, cwds: config.cwds, sessions: manager.list() },
+    });
 
     ws.on("message", (raw) => {
-      // 单条坏消息（含合法信封 + 非法 base64）只作丢弃，不能带崩 Hub
+      // 单条坏消息（含合法信封 + 非法 base64 / 未知模板 / spawn 失败）只回 error 或丢弃，不能带崩 Hub
       try {
         const message = parseClientMessage(String(raw));
-        if (message === null || session === null || session.exited) {
+        if (message === null) {
           return;
         }
+        const attached = attachments.get(ws)!;
+
         if (message.type === "input") {
-          if (message.channel === sessionChannel(SESSION_ID)) {
-            session.write(base64ToUtf8(message.payload.data));
+          const sessionId = message.channel.slice("session:".length);
+          const managed = manager.get(sessionId);
+          if (managed !== undefined && !managed.session.exited) {
+            managed.session.write(base64ToUtf8(message.payload.data));
           }
-        } else if (message.payload.sessionId === SESSION_ID) {
-          session.resize(message.payload.cols, message.payload.rows);
+          return;
+        }
+
+        switch (message.type) {
+          case "list": {
+            send(ws, {
+              channel: CONTROL_CHANNEL,
+              type: "sessions",
+              payload: { sessions: manager.list() },
+            });
+            return;
+          }
+          case "create": {
+            let managed: ManagedSession;
+            try {
+              managed = manager.create(message.payload);
+            } catch (err) {
+              send(ws, {
+                channel: CONTROL_CHANNEL,
+                type: "error",
+                payload: { message: err instanceof Error ? err.message : "创建会话失败" },
+              });
+              return;
+            }
+            wireSession(managed);
+            send(ws, { channel: CONTROL_CHANNEL, type: "created", payload: { session: managed.info } });
+            broadcastSessions();
+            return;
+          }
+          case "kill": {
+            if (!manager.kill(message.payload.sessionId)) {
+              send(ws, {
+                channel: CONTROL_CHANNEL,
+                type: "error",
+                payload: { message: `会话不存在：${message.payload.sessionId}` },
+              });
+              return;
+            }
+            // 运行中会话的退出经由 onExit 广播；已退出会话被移除，这里直接广播快照
+            broadcastSessions();
+            return;
+          }
+          case "attach": {
+            const managed = manager.get(message.payload.sessionId);
+            if (managed === undefined) {
+              send(ws, {
+                channel: CONTROL_CHANNEL,
+                type: "error",
+                payload: { message: `会话不存在：${message.payload.sessionId}` },
+              });
+              return;
+            }
+            attached.add(managed.session.id);
+            send(ws, {
+              channel: CONTROL_CHANNEL,
+              type: "attached",
+              payload: { sessionId: managed.session.id, sessionType: managed.session.type },
+            });
+            // ring buffer 重放（ADR-0005）：attach 后先补最近输出
+            const replay = managed.session.replayData();
+            if (replay !== "") {
+              send(ws, {
+                channel: sessionChannel(managed.session.id),
+                type: "output",
+                payload: { data: utf8ToBase64(replay) },
+              });
+            }
+            return;
+          }
+          case "detach": {
+            attached.delete(message.payload.sessionId);
+            return;
+          }
+          case "resize": {
+            const managed = manager.get(message.payload.sessionId);
+            if (managed !== undefined && !managed.session.exited) {
+              managed.session.resize(message.payload.cols, message.payload.rows);
+            }
+            return;
+          }
         }
       } catch (err) {
         console.error("[hub] dropped malformed message:", err);
@@ -121,7 +206,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     });
 
     ws.on("close", () => {
-      clients.delete(ws);
+      attachments.delete(ws);
     });
   });
 
@@ -135,9 +220,9 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     port: address.port,
     address: address.address,
     close: async () => {
-      session?.kill();
-      for (const client of clients) {
-        client.terminate();
+      manager.killAll();
+      for (const ws of attachments.keys()) {
+        ws.terminate();
       }
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));

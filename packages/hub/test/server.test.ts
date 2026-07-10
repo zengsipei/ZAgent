@@ -9,6 +9,7 @@ import {
   sessionChannel,
   utf8ToBase64,
   type Envelope,
+  type SessionInfo,
 } from "@zagent/protocol";
 
 import { loadConfig } from "../src/config.js";
@@ -42,12 +43,13 @@ function tryConnect(url: string, origin?: string): Promise<WebSocket | null> {
 }
 
 /**
- * 测试客户端：从构造起就缓冲全部信封（attached 与首屏输出可能在 open
+ * 测试客户端：从构造起就缓冲全部信封（hello 与首屏输出可能在 open
  * 的同一个 tick 到达，事后挂监听会漏掉），并断言每条消息都是合法信封。
  */
 class TestClient {
   readonly envelopes: Envelope[] = [];
-  outputText = "";
+  /** 按会话通道分桶的输出文本。 */
+  readonly outputs = new Map<string, string>();
   private readonly ws: WebSocket;
   private readonly opened: Promise<boolean>;
   private badMessage: string | null = null;
@@ -62,7 +64,8 @@ class TestClient {
       }
       this.envelopes.push(env);
       if (env.type === "output") {
-        this.outputText += base64ToUtf8((env.payload as { data: string }).data);
+        const prev = this.outputs.get(env.channel) ?? "";
+        this.outputs.set(env.channel, prev + base64ToUtf8((env.payload as { data: string }).data));
       }
     });
     this.opened = new Promise((resolve) => {
@@ -75,28 +78,20 @@ class TestClient {
     return this.opened;
   }
 
-  sendInput(text: string): void {
-    this.ws.send(
-      serializeEnvelope({
-        channel: sessionChannel("main"),
-        type: "input",
-        payload: { data: utf8ToBase64(text) },
-      }),
-    );
+  send(channel: string, type: string, payload: unknown): void {
+    this.ws.send(serializeEnvelope({ channel, type, payload }));
   }
 
-  sendResize(cols: number, rows: number): void {
-    this.ws.send(
-      serializeEnvelope({
-        channel: CONTROL_CHANNEL,
-        type: "resize",
-        payload: { sessionId: "main", cols, rows },
-      }),
-    );
+  sendInput(sessionId: string, text: string): void {
+    this.send(sessionChannel(sessionId), "input", { data: utf8ToBase64(text) });
   }
 
   sendRaw(raw: string): void {
     this.ws.send(raw);
+  }
+
+  outputOf(sessionId: string): string {
+    return this.outputs.get(sessionChannel(sessionId)) ?? "";
   }
 
   /** 轮询等待条件命中；顺带断言途中没有收到非信封消息。 */
@@ -111,11 +106,54 @@ class TestClient {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`等待超时，已收到输出: ${JSON.stringify(this.outputText.slice(-300))}`);
+    throw new Error(
+      `等待超时，已收到信封: ${JSON.stringify(this.envelopes.map((e) => `${e.channel}/${e.type}`))}`,
+    );
   }
 
-  waitForOutput(text: string, timeoutMs?: number): Promise<void> {
-    return this.waitFor(() => this.outputText.includes(text), timeoutMs);
+  waitForOutput(sessionId: string, text: string, timeoutMs?: number): Promise<void> {
+    return this.waitFor(() => this.outputOf(sessionId).includes(text), timeoutMs);
+  }
+
+  /** 等待并返回第一条匹配类型的 control 信封 payload。 */
+  async waitForControl<T>(type: string, predicate?: (payload: T) => boolean): Promise<T> {
+    let found: T | undefined;
+    await this.waitFor(() => {
+      const env = this.envelopes.find(
+        (e) =>
+          e.channel === CONTROL_CHANNEL &&
+          e.type === type &&
+          (predicate === undefined || predicate(e.payload as T)),
+      );
+      if (env !== undefined) {
+        found = env.payload as T;
+        return true;
+      }
+      return false;
+    });
+    return found!;
+  }
+
+  /** 创建 bash 会话并 attach，等到提示符出现，返回 sessionId。 */
+  async createAndAttachShell(cwd = process.cwd()): Promise<string> {
+    const before = this.envelopes.filter((e) => e.type === "created").length;
+    this.send(CONTROL_CHANNEL, "create", { template: "bash", cwd });
+    await this.waitFor(() => this.envelopes.filter((e) => e.type === "created").length > before);
+    const created = this.envelopes.filter((e) => e.type === "created")[before]!;
+    const id = (created.payload as { session: SessionInfo }).session.id;
+    this.send(CONTROL_CHANNEL, "attach", { sessionId: id });
+    await this.waitForOutput(id, "$");
+    return id;
+  }
+
+  latestSessions(): SessionInfo[] {
+    for (let i = this.envelopes.length - 1; i >= 0; i--) {
+      const env = this.envelopes[i]!;
+      if (env.channel === CONTROL_CHANNEL && (env.type === "sessions" || env.type === "hello")) {
+        return (env.payload as { sessions: SessionInfo[] }).sessions;
+      }
+    }
+    return [];
   }
 
   close(): void {
@@ -153,46 +191,114 @@ describe("Hub 监听边界", () => {
   });
 });
 
-describe("信封 WS ⇄ PTY 端到端", () => {
-  it("连接即 attach，输入回显，resize 生效", async () => {
+describe("control 通道会话管理", () => {
+  it("连接即收到 hello：模板、cwd 预设与会话快照", async () => {
     const client = new TestClient(wsUrl(TOKEN), ORIGIN);
     expect(await client.connect()).toBe(true);
 
+    const hello = await client.waitForControl<{
+      templates: { id: string }[];
+      cwds: string[];
+      sessions: SessionInfo[];
+    }>("hello");
+    expect(hello.templates.map((t) => t.id)).toEqual(["claude", "codex", "bash"]);
+    expect(hello.cwds.length).toBeGreaterThan(0);
+    client.close();
+  });
+
+  it("create → attach → 输入回显 → resize 生效", async () => {
+    const client = new TestClient(wsUrl(TOKEN), ORIGIN);
+    expect(await client.connect()).toBe(true);
+
+    const id = await client.createAndAttachShell();
+    client.sendInput(id, "echo tracer_$((40+2))\r");
+    await client.waitForOutput(id, "tracer_42");
+
+    client.send(CONTROL_CHANNEL, "resize", { sessionId: id, cols: 101, rows: 31 });
+    client.sendInput(id, "stty size\r");
+    await client.waitForOutput(id, "31 101");
+    client.close();
+  }, 30000);
+
+  it("未知模板 → error 信封，连接继续可用", async () => {
+    const client = new TestClient(wsUrl(TOKEN), ORIGIN);
+    expect(await client.connect()).toBe(true);
+
+    client.send(CONTROL_CHANNEL, "create", { template: "nope", cwd: process.cwd() });
+    await client.waitForControl<{ message: string }>("error");
+
+    client.send(CONTROL_CHANNEL, "list", {});
+    await client.waitFor(() => client.envelopes.some((e) => e.type === "sessions"));
+    client.close();
+  });
+
+  it("两个会话并存互不干扰；重新 attach 重放 ring buffer", async () => {
+    const client = new TestClient(wsUrl(TOKEN), ORIGIN);
+    expect(await client.connect()).toBe(true);
+
+    const a = await client.createAndAttachShell();
+    const b = await client.createAndAttachShell();
+    expect(b).not.toBe(a);
+
+    client.sendInput(a, "echo only_in_$((1000+1))a\r");
+    await client.waitForOutput(a, "only_in_1001a");
+    client.sendInput(b, "echo only_in_$((2000+2))b\r");
+    await client.waitForOutput(b, "only_in_2002b");
+    // 会话隔离：a 的输出不出现在 b 的通道，反之亦然
+    expect(client.outputOf(b)).not.toContain("only_in_1001a");
+    expect(client.outputOf(a)).not.toContain("only_in_2002b");
+
+    // 第二个连接 attach a：ring buffer 重放能看到历史输出
+    const observer = new TestClient(wsUrl(TOKEN), ORIGIN);
+    expect(await observer.connect()).toBe(true);
+    observer.send(CONTROL_CHANNEL, "attach", { sessionId: a });
+    await observer.waitForOutput(a, "only_in_1001a");
+
+    // detach 后不再收到新输出
+    observer.send(CONTROL_CHANNEL, "detach", { sessionId: a });
+    client.sendInput(a, "echo after_$((3000+3))detach\r");
+    await client.waitForOutput(a, "after_3003detach");
+    expect(observer.outputOf(a)).not.toContain("after_3003detach");
+
+    observer.close();
+    client.close();
+  }, 30000);
+
+  it("kill 终止进程：exit 信封 + sessions 快照同步；再次 kill 移除条目", async () => {
+    const client = new TestClient(wsUrl(TOKEN), ORIGIN);
+    expect(await client.connect()).toBe(true);
+
+    const id = await client.createAndAttachShell();
+    client.send(CONTROL_CHANNEL, "kill", { sessionId: id });
+
     await client.waitFor(() =>
-      client.envelopes.some(
-        (env) =>
-          env.channel === CONTROL_CHANNEL &&
-          env.type === "attached" &&
-          (env.payload as { sessionId: string }).sessionId === "main" &&
-          (env.payload as { sessionType: string }).sessionType === "pty",
-      ),
+      client.envelopes.some((e) => e.channel === sessionChannel(id) && e.type === "exit"),
     );
+    await client.waitFor(() => {
+      const info = client.latestSessions().find((s) => s.id === id);
+      return info !== undefined && info.status === "exited";
+    });
 
-    // 等 bash 就绪（出现提示符 $）再交互
-    await client.waitForOutput("$");
-
-    client.sendInput("echo tracer_$((40+2))\r");
-    await client.waitForOutput("tracer_42");
-
-    client.sendResize(101, 31);
-    client.sendInput("stty size\r");
-    await client.waitForOutput("31 101");
-
+    // 对已退出的会话再 kill = 从列表移除
+    client.send(CONTROL_CHANNEL, "kill", { sessionId: id });
+    await client.waitFor(() => client.latestSessions().every((s) => s.id !== id));
     client.close();
   }, 30000);
 
   it("非法消息不致崩溃，会话继续可用", async () => {
     const client = new TestClient(wsUrl(TOKEN), ORIGIN);
     expect(await client.connect()).toBe(true);
-    await client.waitForOutput("$");
+    const id = await client.createAndAttachShell();
 
     client.sendRaw("not an envelope");
-    client.sendRaw('{"channel":"session:main","type":"input","payload":{"data":123}}');
+    client.sendRaw(`{"channel":"session:${id}","type":"input","payload":{"data":123}}`);
     // 信封合法但 data 不是合法 base64 —— 解码在 handler 内 throw 也不能带崩 Hub
-    client.sendRaw('{"channel":"session:main","type":"input","payload":{"data":"!!!!"}}');
+    client.sendRaw(`{"channel":"session:${id}","type":"input","payload":{"data":"!!!!"}}`);
+    client.send(CONTROL_CHANNEL, "kill", { sessionId: "ghost" });
+    await client.waitForControl<{ message: string }>("error");
 
-    client.sendInput("echo still_$((100+11))\r");
-    await client.waitForOutput("still_111");
+    client.sendInput(id, "echo still_$((100+11))\r");
+    await client.waitForOutput(id, "still_111");
     client.close();
   }, 30000);
 });
