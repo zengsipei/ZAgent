@@ -199,6 +199,30 @@ export function TerminalView({
 
     connect();
 
+    // 回前台/网络恢复时不等退避定时器：锁屏期间浏览器节流定时器且退避可能已攀升，
+    // 直接清零重连。若 ws 自认 OPEN 但实际已死，onclose 稍后到达，用清零后的退避快速重试
+    function reconnectNow(): void {
+      if (disposed || sessionExited) {
+        return;
+      }
+      reconnectAttempt = 0;
+      if (ws !== null && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      connect();
+    }
+    function onVisibilityChange(): void {
+      if (document.visibilityState === "visible") {
+        reconnectNow();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", reconnectNow);
+
     const dataListener = term.onData((data) => {
       let out = data;
       // Ctrl 粘滞时把系统键盘敲进来的字符合成为控制字节
@@ -223,6 +247,8 @@ export function TerminalView({
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);
       }
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", reconnectNow);
       observer.disconnect();
       dataListener.dispose();
       resizeListener.dispose();
