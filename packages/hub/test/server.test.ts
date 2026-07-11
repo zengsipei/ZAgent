@@ -1,22 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
 
-import {
-  CONTROL_CHANNEL,
-  base64ToUtf8,
-  parseEnvelope,
-  serializeEnvelope,
-  sessionChannel,
-  utf8ToBase64,
-  type Envelope,
-  type SessionInfo,
-} from "@zagent/protocol";
+import { CONTROL_CHANNEL, sessionChannel, type SessionInfo } from "@zagent/protocol";
 
 import { loadConfig } from "../src/config.js";
 import { startHub, type RunningHub } from "../src/server.js";
-
-const TOKEN = "t".repeat(64);
-const ORIGIN = "http://localhost:5173";
+import { ORIGIN, TOKEN, TestClient, tryConnect } from "./helpers.js";
 
 let hub: RunningHub;
 
@@ -31,134 +19,6 @@ afterAll(async () => {
 function wsUrl(token?: string): string {
   const query = token === undefined ? "" : `?token=${token}`;
   return `ws://127.0.0.1:${hub.port}/ws${query}`;
-}
-
-/** 打开连接并等待结果；被拒时 resolve 为 null。 */
-function tryConnect(url: string, origin?: string): Promise<WebSocket | null> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(url, origin === undefined ? {} : { origin });
-    ws.once("open", () => resolve(ws));
-    ws.once("error", () => resolve(null));
-  });
-}
-
-/**
- * 测试客户端：从构造起就缓冲全部信封（hello 与首屏输出可能在 open
- * 的同一个 tick 到达，事后挂监听会漏掉），并断言每条消息都是合法信封。
- */
-class TestClient {
-  readonly envelopes: Envelope[] = [];
-  /** 按会话通道分桶的输出文本。 */
-  readonly outputs = new Map<string, string>();
-  private readonly ws: WebSocket;
-  private readonly opened: Promise<boolean>;
-  private badMessage: string | null = null;
-
-  constructor(url: string, origin?: string) {
-    this.ws = new WebSocket(url, origin === undefined ? {} : { origin });
-    this.ws.on("message", (raw) => {
-      const env = parseEnvelope(String(raw));
-      if (env === null) {
-        this.badMessage = String(raw).slice(0, 120);
-        return;
-      }
-      this.envelopes.push(env);
-      if (env.type === "output") {
-        const prev = this.outputs.get(env.channel) ?? "";
-        this.outputs.set(env.channel, prev + base64ToUtf8((env.payload as { data: string }).data));
-      }
-    });
-    this.opened = new Promise((resolve) => {
-      this.ws.once("open", () => resolve(true));
-      this.ws.once("error", () => resolve(false));
-    });
-  }
-
-  async connect(): Promise<boolean> {
-    return this.opened;
-  }
-
-  send(channel: string, type: string, payload: unknown): void {
-    this.ws.send(serializeEnvelope({ channel, type, payload }));
-  }
-
-  sendInput(sessionId: string, text: string): void {
-    this.send(sessionChannel(sessionId), "input", { data: utf8ToBase64(text) });
-  }
-
-  sendRaw(raw: string): void {
-    this.ws.send(raw);
-  }
-
-  outputOf(sessionId: string): string {
-    return this.outputs.get(sessionChannel(sessionId)) ?? "";
-  }
-
-  /** 轮询等待条件命中；顺带断言途中没有收到非信封消息。 */
-  async waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (this.badMessage !== null) {
-        throw new Error(`收到非信封消息: ${this.badMessage}`);
-      }
-      if (predicate()) {
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    throw new Error(
-      `等待超时，已收到信封: ${JSON.stringify(this.envelopes.map((e) => `${e.channel}/${e.type}`))}`,
-    );
-  }
-
-  waitForOutput(sessionId: string, text: string, timeoutMs?: number): Promise<void> {
-    return this.waitFor(() => this.outputOf(sessionId).includes(text), timeoutMs);
-  }
-
-  /** 等待并返回第一条匹配类型的 control 信封 payload。 */
-  async waitForControl<T>(type: string, predicate?: (payload: T) => boolean): Promise<T> {
-    let found: T | undefined;
-    await this.waitFor(() => {
-      const env = this.envelopes.find(
-        (e) =>
-          e.channel === CONTROL_CHANNEL &&
-          e.type === type &&
-          (predicate === undefined || predicate(e.payload as T)),
-      );
-      if (env !== undefined) {
-        found = env.payload as T;
-        return true;
-      }
-      return false;
-    });
-    return found!;
-  }
-
-  /** 创建 bash 会话并 attach，等到提示符出现，返回 sessionId。 */
-  async createAndAttachShell(cwd = process.cwd()): Promise<string> {
-    const before = this.envelopes.filter((e) => e.type === "created").length;
-    this.send(CONTROL_CHANNEL, "create", { template: "bash", cwd });
-    await this.waitFor(() => this.envelopes.filter((e) => e.type === "created").length > before);
-    const created = this.envelopes.filter((e) => e.type === "created")[before]!;
-    const id = (created.payload as { session: SessionInfo }).session.id;
-    this.send(CONTROL_CHANNEL, "attach", { sessionId: id });
-    await this.waitForOutput(id, "$");
-    return id;
-  }
-
-  latestSessions(): SessionInfo[] {
-    for (let i = this.envelopes.length - 1; i >= 0; i--) {
-      const env = this.envelopes[i]!;
-      if (env.channel === CONTROL_CHANNEL && (env.type === "sessions" || env.type === "hello")) {
-        return (env.payload as { sessions: SessionInfo[] }).sessions;
-      }
-    }
-    return [];
-  }
-
-  close(): void {
-    this.ws.close();
-  }
 }
 
 describe("底线认证在 upgrade 阶段生效", () => {

@@ -40,8 +40,10 @@ export function TerminalView({
   onBack: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState("连接中…");
-  const [tone, setTone] = useState<StatusTone>("info");
+  const [statusLine, setStatusLine] = useState<{ text: string; tone: StatusTone }>({
+    text: "连接中…",
+    tone: "info",
+  });
   const [attached, setAttached] = useState(false);
   const [ctrl, setCtrl] = useState<CtrlState>("off");
   const ctrlRef = useRef<CtrlState>("off");
@@ -94,10 +96,16 @@ export function TerminalView({
     fit.fit();
     termRef.current = term;
 
-    const ws = new WebSocket(`${HUB_WS_URL}?token=${encodeURIComponent(token)}`);
+    // 断线自动重连（ADR-0005：连接只是观察者，断开重连即恢复）。
+    // disposed = 组件卸载；sessionExited = 会话已退出，二者都不再重连。
+    let ws: WebSocket | null = null;
+    let disposed = false;
+    let sessionExited = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     function sendMessage(message: ClientMessage): void {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws !== null && ws.readyState === WebSocket.OPEN) {
         ws.send(serializeEnvelope(message));
       }
     }
@@ -119,48 +127,77 @@ export function TerminalView({
       });
     }
 
-    ws.onopen = () => {
-      sendMessage({ channel: CONTROL_CHANNEL, type: "attach", payload: { sessionId } });
-    };
-    ws.onmessage = (event) => {
-      const message = parseHubMessage(String(event.data));
-      if (message === null) {
+    function scheduleReconnect(): void {
+      if (disposed || sessionExited || reconnectTimer !== null) {
         return;
       }
-      if (message.type === "attached" && message.payload.sessionId === sessionId) {
-        setStatus(`已附加会话 ${sessionId}`);
-        setTone("ok");
-        setAttached(true);
-        sendResize();
-        term.focus();
+      const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
+      reconnectAttempt += 1;
+      setStatusLine({ text: `连接断开，${Math.round(delay / 1000)} 秒后重连…`, tone: "error" });
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    function connect(): void {
+      if (disposed) {
         return;
       }
-      if (message.type === "error") {
-        setStatus(message.payload.message);
-        setTone("error");
-        setAttached(false);
-        return;
-      }
-      if (message.channel === sessionChannel(sessionId)) {
-        if (message.type === "output") {
-          term.write(base64ToBytes(message.payload.data));
-        } else if (message.type === "exit") {
-          setStatus(`会话已退出（exit ${message.payload.exitCode}），返回列表重开`);
-          setTone("error");
-          setAttached(false);
-        }
-      }
-    };
-    ws.onclose = () => {
-      setAttached(false);
-      setStatus((prev) => {
-        if (prev.startsWith("会话已退出")) {
-          return prev;
-        }
-        setTone("error");
-        return "连接已关闭（token/Origin 校验不通过或 Hub 未启动）";
+      setStatusLine({
+        text: reconnectAttempt === 0 ? "连接中…" : `重连中…（第 ${reconnectAttempt} 次）`,
+        tone: "info",
       });
-    };
+      const socket = new WebSocket(`${HUB_WS_URL}?token=${encodeURIComponent(token)}`);
+      ws = socket;
+
+      socket.onopen = () => {
+        sendMessage({ channel: CONTROL_CHANNEL, type: "attach", payload: { sessionId } });
+      };
+      socket.onmessage = (event) => {
+        const message = parseHubMessage(String(event.data));
+        if (message === null) {
+          return;
+        }
+        if (message.type === "attached" && message.payload.sessionId === sessionId) {
+          // 重连恢复：清掉旧画面再吃 ring buffer 重放，避免内容叠加；
+          // 随后服务端 resize 抖动逼全屏 TUI 整屏重绘收敛
+          term.reset();
+          reconnectAttempt = 0;
+          setStatusLine({ text: `已附加会话 ${sessionId}`, tone: "ok" });
+          setAttached(true);
+          sendResize();
+          term.focus();
+          return;
+        }
+        if (message.type === "error") {
+          setStatusLine({ text: message.payload.message, tone: "error" });
+          setAttached(false);
+          return;
+        }
+        if (message.channel === sessionChannel(sessionId)) {
+          if (message.type === "output") {
+            term.write(base64ToBytes(message.payload.data));
+          } else if (message.type === "exit") {
+            sessionExited = true;
+            setStatusLine({
+              text: `会话已退出（exit ${message.payload.exitCode}），返回列表重开`,
+              tone: "error",
+            });
+            setAttached(false);
+          }
+        }
+      };
+      socket.onclose = () => {
+        if (disposed || sessionExited) {
+          return;
+        }
+        setAttached(false);
+        scheduleReconnect();
+      };
+    }
+
+    connect();
 
     const dataListener = term.onData((data) => {
       let out = data;
@@ -182,10 +219,14 @@ export function TerminalView({
     observer.observe(container);
 
     return () => {
+      disposed = true;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+      }
       observer.disconnect();
       dataListener.dispose();
       resizeListener.dispose();
-      ws.close();
+      ws?.close();
       term.dispose();
       termRef.current = null;
       sendInputRef.current = null;
@@ -213,12 +254,12 @@ export function TerminalView({
 
   return (
     <div className="app">
-      <div className="status-bar" data-tone={tone}>
+      <div className="status-bar" data-tone={statusLine.tone}>
         <button type="button" className="status-back" onClick={onBack} aria-label="返回会话列表">
           ‹ 列表
         </button>
         <span className="status-dot" aria-hidden="true" />
-        {status}
+        {statusLine.text}
       </div>
       <div className="terminal-container" ref={containerRef} />
       <KeyBar ctrl={ctrl} disabled={!attached} onCtrlTap={handleCtrlTap} onKey={handleKey} />

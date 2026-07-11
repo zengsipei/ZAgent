@@ -28,6 +28,11 @@ export interface RunningHub {
   close(): Promise<void>;
 }
 
+// 单连接发送缓冲上限：断网不发 close 帧的死连接会一直堆积输出直到 TCP 超时，
+// 超限直接掐断（触发 close 清理），护住 ring buffer 之外的内存路径。
+// 阈值须明显大于单帧重放（ring buffer 上限的 base64 最大 ≈ 4MB），避免误杀慢速活跃端
+const MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
+
 export async function startHub(config: HubConfig): Promise<RunningHub> {
   const server = http.createServer((_req, res) => {
     res.writeHead(404).end();
@@ -39,9 +44,14 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   const attachments = new Map<WebSocket, Set<string>>();
 
   function send(ws: WebSocket, message: HubMessage): void {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(serializeEnvelope(message));
+    if (ws.readyState !== ws.OPEN) {
+      return;
     }
+    if (ws.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+      ws.terminate();
+      return;
+    }
+    ws.send(serializeEnvelope(message));
   }
 
   function broadcastSessions(): void {
@@ -175,6 +185,18 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
                 type: "output",
                 payload: { data: utf8ToBase64(replay) },
               });
+            }
+            if (managed.session.exited) {
+              // 断线期间会话已死：exit 只发给了当时在场的连接，这里补发，
+              // 否则重连端显示「已附加」却输入无响应
+              send(ws, {
+                channel: sessionChannel(managed.session.id),
+                type: "exit",
+                payload: { exitCode: managed.info.exitCode ?? 0 },
+              });
+            } else {
+              // 重放后抖动一次，逼全屏 TUI 整屏重绘收敛画面
+              managed.session.scheduleNudge();
             }
             return;
           }
