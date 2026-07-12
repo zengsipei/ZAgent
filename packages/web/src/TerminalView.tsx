@@ -258,6 +258,51 @@ export function TerminalView({
     const observer = new ResizeObserver(() => reportCapacity());
     observer.observe(container);
 
+    // 触摸滚动桥接（#11）：xterm.js 不处理触摸手势，把竖向滑动映射为 scrollLines
+    // （内容跟随手指：下拉看历史，上推回底部；未到整行的位移累积到下一次）。
+    // 全屏 TUI 运行于 alternate screen、无 scrollback，手势直接放行不做事。
+    // 位移超过 TOUCH_SLOP 才认定为滚动手势并开始拦截：轻点自带的像素抖动
+    // 不能吞掉 click，否则点击聚焦（弹系统键盘）失效
+    const TOUCH_SLOP_PX = 8;
+    let touchY: number | null = null;
+    let touchCarry = 0;
+    let touchScrolling = false;
+    function onTouchStart(event: TouchEvent): void {
+      touchY = event.touches.length === 1 ? event.touches[0]!.clientY : null;
+      touchCarry = 0;
+      touchScrolling = false;
+    }
+    function onTouchMove(event: TouchEvent): void {
+      if (touchY === null || event.touches.length !== 1) {
+        return;
+      }
+      if (term.buffer.active.type === "alternate") {
+        return;
+      }
+      const y = event.touches[0]!.clientY;
+      if (!touchScrolling) {
+        if (Math.abs(y - touchY) < TOUCH_SLOP_PX) {
+          return;
+        }
+        touchScrolling = true;
+      }
+      const screen = term.element?.querySelector(".xterm-screen") ?? null;
+      const cellHeight = screen !== null && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+      if (cellHeight <= 0) {
+        return;
+      }
+      const delta = touchY - y + touchCarry;
+      const lines = Math.trunc(delta / cellHeight);
+      touchCarry = delta - lines * cellHeight;
+      touchY = y;
+      if (lines !== 0) {
+        term.scrollLines(lines);
+      }
+      event.preventDefault();
+    }
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+
     return () => {
       disposed = true;
       if (reconnectTimer !== null) {
@@ -266,6 +311,8 @@ export function TerminalView({
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("online", reconnectNow);
       observer.disconnect();
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
       dataListener.dispose();
       ws?.close();
       term.dispose();
