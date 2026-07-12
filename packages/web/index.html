@@ -7,6 +7,14 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#141b1d" />
+    <!-- PWA（#7）：加入主屏幕后 standalone 全屏运行，无浏览器地址栏 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon-192.png" type="image/png" />
+    <!-- iOS 不读 manifest 图标；black-translucent 让内容延伸到状态栏下，安全区由 CSS env() 兜住 -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ZAgent" />
     <title>ZAgent</title>
   </head>
   <body>

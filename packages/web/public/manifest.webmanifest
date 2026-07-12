@@ -1,0 +1,19 @@
+{
+  "name": "ZAgent",
+  "short_name": "ZAgent",
+  "description": "远程驱动本地编程 CLI 的移动终端",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1517",
+  "theme_color": "#141b1d",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
