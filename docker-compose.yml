@@ -1,0 +1,31 @@
+# 单容器多会话（ADR-0002）：一条 `docker compose up -d` 拉起 Hub。
+# 凭证目录挂 named volume 外置持久化；改用 WSL bind mount 由部署者自行替换路径。
+services:
+  hub:
+    build: .
+    container_name: zagent-hub
+    restart: unless-stopped
+    # Hub 监听容器内网；宿主机端口映射仅绑定 localhost（供本地开发与后续隧道接入）
+    ports:
+      - "127.0.0.1:7433:7433"
+    environment:
+      # 在仓库根 .env 中设置（参见 .env.example）
+      ZAGENT_TOKEN: ${ZAGENT_TOKEN:?请在 .env 中设置 ZAGENT_TOKEN（至少 32 字符的长随机串）}
+      # 同源访问（Hub 托管 web）固定放行；隧道域名经 ZAGENT_EXTRA_ORIGINS 追加
+      ZAGENT_ALLOWED_ORIGINS: http://localhost:7433,http://127.0.0.1:7433${ZAGENT_EXTRA_ORIGINS:+,$ZAGENT_EXTRA_ORIGINS}
+    volumes:
+      # 凭证卷（安全等级等同 API key）：首次 docker exec 登录一次，之后容器随便重建
+      - claude-config:/root/.claude
+      - codex-config:/root/.codex
+      - gh-config:/root/.config/gh
+      - git-config:/root/.config/git
+      # 工作区：如何填充属部署配置（docker exec 进容器 git clone，或 bind mount 替换本行）
+      # 例：- /mnt/f/code:/workspace  （WSL bind；跨 OS I/O 慢，推荐 clone 进卷）
+      - workspace:/workspace
+
+volumes:
+  claude-config:
+  codex-config:
+  gh-config:
+  git-config:
+  workspace:

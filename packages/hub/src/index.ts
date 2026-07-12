@@ -4,14 +4,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { HUB_HOST, loadConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { startHub } from "./server.js";
 
 loadDotEnv(join(dirname(fileURLToPath(import.meta.url)), "../../../.env"));
 
 const config = loadConfig(process.env);
 const hub = await startHub(config);
-console.log(`[hub] listening on ws://${HUB_HOST}:${hub.port}/ws (loopback only)`);
+console.log(`[hub] listening on ws://${hub.address}:${hub.port}/ws`);
 console.log(`[hub] allowed origins: ${[...config.allowedOrigins].join(", ")}`);
 
 function loadDotEnv(path: string): void {

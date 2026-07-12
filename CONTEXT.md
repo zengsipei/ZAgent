@@ -14,7 +14,7 @@
 - **回放缓冲（Ring Buffer）** — Hub 为每个会话保留的最近若干 MB 输出，attach 时重放以恢复画面。
 - **重绘抖动（Resize Nudge）** — attach 重放后微调一次 PTY 尺寸，逼全屏 TUI 整屏重绘以收敛画面。
 - **多端广播** — 同一会话允许多个连接：输出广播、输入不加锁、最后 resize 者决定尺寸。
-- **复活（Resurrect）** — 容器重启后活动任务丢失，凭会话元数据里的 `claudeSessionId` 执行 `claude --resume` 恢复对话上下文（终端画面与进行中任务不可恢复）。
+- **复活（Resurrect）** — 容器重启后活动任务丢失，用命令模板里的 `claude --continue` / `claude --resume` 预设新建会话找回对话上下文（终端画面与进行中任务不可恢复）；不做 session id 簿记。
 - **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。
 - **边缘认证（Edge Auth）** — Cloudflare Access 在 CF 边缘完成的身份验证；未认证流量不触达 Hub。
 - **应用层底线（App-layer Floor）** — Hub 内写死、不可配置关闭的最低认证：长随机 token 校验 + Origin 白名单。

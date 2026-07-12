@@ -12,10 +12,13 @@ export interface ManagedSession {
   info: SessionInfo;
 }
 
-/** 命令模板：三种模板走同一条 PTY spawn 路径（PTY 模式天然命令无关）。 */
+/** 命令模板：各模板走同一条 PTY spawn 路径（PTY 模式天然命令无关）。 */
 export function buildTemplates(shell: string): SessionTemplate[] {
   return [
     { id: "claude", name: "Claude Code", command: "claude", args: [] },
+    // 复活路径（ADR-0005）：容器/Hub 重启后凭 --continue / --resume 找回对话上下文
+    { id: "claude-continue", name: "Claude · 继续上次对话", command: "claude", args: ["--continue"] },
+    { id: "claude-resume", name: "Claude · 挑选历史对话", command: "claude", args: ["--resume"] },
     { id: "codex", name: "Codex", command: "codex", args: [] },
     { id: "bash", name: "Shell", command: shell, args: [] },
   ];

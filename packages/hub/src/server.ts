@@ -1,6 +1,6 @@
 // Hub 服务器：WS upgrade 阶段做底线认证；会话管理（list/create/kill/attach）
 // 全部走 control 通道信封消息，不新增 REST 端点（ADR-0004）。
-// 仅监听 127.0.0.1（HUB_HOST 常量，见 ADR-0003 隧道无关设计）。
+// 默认仅监听 127.0.0.1（ADR-0003）；容器部署经 ZAGENT_HOST 绑定容器内网（ADR-0002）。
 
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -19,8 +19,9 @@ import {
 } from "@zagent/protocol";
 
 import { verifyUpgrade } from "./auth.js";
-import { HUB_HOST, type HubConfig } from "./config.js";
+import type { HubConfig } from "./config.js";
 import { SessionManager, buildTemplates, type ManagedSession } from "./manager.js";
+import { serveStatic } from "./static.js";
 
 export interface RunningHub {
   port: number;
@@ -34,8 +35,12 @@ export interface RunningHub {
 const MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 
 export async function startHub(config: HubConfig): Promise<RunningHub> {
-  const server = http.createServer((_req, res) => {
-    res.writeHead(404).end();
+  const server = http.createServer((req, res) => {
+    if (config.staticDir === null) {
+      res.writeHead(404).end();
+      return;
+    }
+    serveStatic(config.staticDir, req, res);
   });
   const wss = new WebSocketServer({ noServer: true });
   const templates = buildTemplates(config.shell);
@@ -224,7 +229,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(config.port, HUB_HOST, resolve);
+    server.listen(config.port, config.host, resolve);
   });
   const address = server.address() as AddressInfo;
 

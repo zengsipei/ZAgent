@@ -1,4 +1,5 @@
-// Hub 配置。监听地址不在配置项里：仅监听 loopback 是 ADR-0003 的定局，写死为常量。
+// Hub 配置。默认仅监听 loopback（ADR-0003）；容器内需绑定容器内网时
+// 由部署配置显式设置 ZAGENT_HOST=0.0.0.0（ADR-0002：宿主机端口映射仍只绑 localhost）。
 
 import { homedir } from "node:os";
 
@@ -13,7 +14,10 @@ const DEFAULT_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
 export interface HubConfig {
   token: string;
   allowedOrigins: ReadonlySet<string>;
+  host: string;
   port: number;
+  /** 静态文件根目录（web 构建产物）；未设置时 HTTP 请求一律 404。 */
+  staticDir: string | null;
   shell: string;
   /** 新建会话的 cwd 预设列表（前端下拉），手输路径兜底。 */
   cwds: string[];
@@ -60,7 +64,9 @@ export function loadConfig(env: Record<string, string | undefined>): HubConfig {
   return {
     token,
     allowedOrigins,
+    host: env["ZAGENT_HOST"] ?? HUB_HOST,
     port,
+    staticDir: env["ZAGENT_STATIC_DIR"] ?? null,
     shell: env["ZAGENT_SHELL"] ?? "bash",
     cwds,
   };

@@ -19,6 +19,15 @@ npm run dev:web        # http://localhost:5173
 
 浏览器打开 `http://localhost:5173/?token=<ZAGENT_TOKEN>`（token 会存入 localStorage 并从地址栏抹掉）。
 
+## Docker 部署
+
+```bash
+cp .env.example .env   # 填入 ZAGENT_TOKEN
+docker compose up -d --build
+```
+
+浏览器打开 `http://localhost:7433/?token=<ZAGENT_TOKEN>`。首次登录 CLI、凭证外置与复活路径见 `docs/deploy.md`。
+
 ## 测试
 
 ```bash
