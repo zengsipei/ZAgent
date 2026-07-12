@@ -64,6 +64,10 @@ export interface InputPayload {
   data: string;
 }
 
+/**
+ * 容量上报（#9）：语义不是「把 PTY 设为此尺寸」，而是「本端最大可显示 cols/rows」。
+ * Hub 对每会话取所有已 attach 连接容量的最小交集作为有效尺寸（tmux 式）。
+ */
 export interface ResizePayload {
   sessionId: string;
   cols: number;
@@ -82,6 +86,15 @@ export interface ExitPayload {
 export interface AttachedPayload {
   sessionId: string;
   sessionType: SessionType;
+  /** 会话当前有效尺寸：新 attach 端立刻知道该按什么网格渲染（#9）。 */
+  cols: number;
+  rows: number;
+}
+
+/** 会话有效尺寸变化广播（各端容量 min 重算的结果；重绘抖动的瞬态尺寸不广播）。 */
+export interface ResizedPayload {
+  cols: number;
+  rows: number;
 }
 
 export interface CreatePayload {
@@ -132,7 +145,8 @@ export type HubMessage =
   | { channel: typeof CONTROL_CHANNEL; type: "attached"; payload: AttachedPayload }
   | { channel: typeof CONTROL_CHANNEL; type: "error"; payload: ErrorPayload }
   | { channel: SessionChannel; type: "output"; payload: OutputPayload }
-  | { channel: SessionChannel; type: "exit"; payload: ExitPayload };
+  | { channel: SessionChannel; type: "exit"; payload: ExitPayload }
+  | { channel: SessionChannel; type: "resized"; payload: ResizedPayload };
 
 // ---------------------------------------------------------------------------
 // serialize / parse
@@ -228,11 +242,20 @@ export function parseHubMessage(raw: string): HubMessage | null {
     return null;
   }
   if (envelope.type === "attached" && envelope.channel === CONTROL_CHANNEL) {
-    const { sessionId, sessionType } = payload as Record<string, unknown>;
-    if (typeof sessionId !== "string" || sessionType !== "pty") {
+    const { sessionId, sessionType, cols, rows } = payload as Record<string, unknown>;
+    if (
+      typeof sessionId !== "string" ||
+      sessionType !== "pty" ||
+      !isPositiveInt(cols) ||
+      !isPositiveInt(rows)
+    ) {
       return null;
     }
-    return { channel: CONTROL_CHANNEL, type: "attached", payload: { sessionId, sessionType } };
+    return {
+      channel: CONTROL_CHANNEL,
+      type: "attached",
+      payload: { sessionId, sessionType, cols, rows },
+    };
   }
   if (envelope.type === "hello" && envelope.channel === CONTROL_CHANNEL) {
     const { templates, cwds, sessions } = payload as Record<string, unknown>;
@@ -281,6 +304,13 @@ export function parseHubMessage(raw: string): HubMessage | null {
       return null;
     }
     return { channel: envelope.channel, type: "exit", payload: { exitCode } };
+  }
+  if (envelope.type === "resized" && isSessionChannel(envelope.channel)) {
+    const { cols, rows } = payload as Record<string, unknown>;
+    if (!isPositiveInt(cols) || !isPositiveInt(rows)) {
+      return null;
+    }
+    return { channel: envelope.channel, type: "resized", payload: { cols, rows } };
   }
   return null;
 }

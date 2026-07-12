@@ -112,11 +112,16 @@ describe("parseClientMessage（Hub 入站消息校验）", () => {
 });
 
 describe("parseHubMessage（客户端入站消息校验）", () => {
-  it("接受合法 attached / output / exit 消息", () => {
+  it("接受合法 attached / output / exit / resized 消息", () => {
     const good = [
-      { channel: "control", type: "attached", payload: { sessionId: "main", sessionType: "pty" } },
+      {
+        channel: "control",
+        type: "attached",
+        payload: { sessionId: "main", sessionType: "pty", cols: 80, rows: 24 },
+      },
       { channel: "session:main", type: "output", payload: { data: utf8ToBase64("hi") } },
       { channel: "session:main", type: "exit", payload: { exitCode: 0 } },
+      { channel: "session:main", type: "resized", payload: { cols: 100, rows: 40 } },
     ];
     for (const env of good) {
       expect(parseHubMessage(JSON.stringify(env))?.type).toBe(env.type);
@@ -125,11 +130,20 @@ describe("parseHubMessage（客户端入站消息校验）", () => {
 
   it("拒绝错误通道或坏 payload", () => {
     const bad = [
-      { channel: "session:main", type: "attached", payload: { sessionId: "main", sessionType: "pty" } },
+      {
+        channel: "session:main",
+        type: "attached",
+        payload: { sessionId: "main", sessionType: "pty", cols: 80, rows: 24 },
+      },
       { channel: "control", type: "attached", payload: { sessionId: "main" } },
+      // attached 必须携带会话当前尺寸（#9）
+      { channel: "control", type: "attached", payload: { sessionId: "main", sessionType: "pty" } },
       { channel: "control", type: "output", payload: { data: "aGk=" } },
       { channel: "session:main", type: "output", payload: { data: 1 } },
       { channel: "session:main", type: "exit", payload: {} },
+      { channel: "control", type: "resized", payload: { cols: 100, rows: 40 } },
+      { channel: "session:main", type: "resized", payload: { cols: 0, rows: 40 } },
+      { channel: "session:main", type: "resized", payload: { cols: 100 } },
     ];
     for (const env of bad) {
       expect(parseHubMessage(JSON.stringify(env))).toBeNull();

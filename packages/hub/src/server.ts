@@ -29,6 +29,12 @@ export interface RunningHub {
   close(): Promise<void>;
 }
 
+/** 某连接对某会话上报的最大显示容量（#9）。 */
+interface ClientCapacity {
+  cols: number;
+  rows: number;
+}
+
 // 单连接发送缓冲上限：断网不发 close 帧的死连接会一直堆积输出直到 TCP 超时，
 // 超限直接掐断（触发 close 清理），护住 ring buffer 之外的内存路径。
 // 阈值须明显大于单帧重放（ring buffer 上限的 base64 最大 ≈ 4MB），避免误杀慢速活跃端
@@ -45,8 +51,9 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   const wss = new WebSocketServer({ noServer: true });
   const templates = buildTemplates(config.shell);
   const manager = new SessionManager(templates);
-  // 每个连接各自 attach 的会话集合：输出只发给附加者，会话快照广播给所有连接
-  const attachments = new Map<WebSocket, Set<string>>();
+  // 每个连接各自 attach 的会话 → 该端上报的最大容量（null = 已附加但尚未上报）。
+  // 输出只发给附加者；会话有效尺寸 = 全部已上报容量的最小交集（#9，tmux 式）
+  const attachments = new Map<WebSocket, Map<string, ClientCapacity | null>>();
 
   function send(ws: WebSocket, message: HubMessage): void {
     if (ws.readyState !== ws.OPEN) {
@@ -82,6 +89,37 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     send(ws, { channel: CONTROL_CHANNEL, type: "error", payload: { message } });
   }
 
+  // 重算会话有效尺寸 = 全部已上报容量的逐维 min；变化才真正 resize 并广播 resized。
+  // 无人上报容量时保持现状（attach / detach / 断开 / 容量变化都从这里走）
+  function applyMinSize(sessionId: string): void {
+    const managed = manager.get(sessionId);
+    if (managed === undefined || managed.session.exited) {
+      return;
+    }
+    let cols = Infinity;
+    let rows = Infinity;
+    for (const attached of attachments.values()) {
+      const capacity = attached.get(sessionId);
+      if (capacity != null) {
+        cols = Math.min(cols, capacity.cols);
+        rows = Math.min(rows, capacity.rows);
+      }
+    }
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
+      return;
+    }
+    const current = managed.session.size;
+    if (cols === current.cols && rows === current.rows) {
+      return;
+    }
+    managed.session.resize(cols, rows);
+    sendToAttached(sessionId, {
+      channel: sessionChannel(sessionId),
+      type: "resized",
+      payload: { cols, rows },
+    });
+  }
+
   // 会话创建时挂一次输出/退出转发：输出发给当时 attach 的连接，退出后广播快照
   function wireSession(managed: ManagedSession): void {
     const { session } = managed;
@@ -115,7 +153,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   });
 
   wss.on("connection", (ws: WebSocket) => {
-    attachments.set(ws, new Set());
+    attachments.set(ws, new Map());
     send(ws, {
       channel: CONTROL_CHANNEL,
       type: "hello",
@@ -176,11 +214,20 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
               sendError(ws, `会话不存在：${message.payload.sessionId}`);
               return;
             }
-            attached.add(managed.session.id);
+            // 重复 attach（重连补发）幂等：不覆盖已上报的容量
+            if (!attached.has(managed.session.id)) {
+              attached.set(managed.session.id, null);
+            }
+            const size = managed.session.size;
             send(ws, {
               channel: CONTROL_CHANNEL,
               type: "attached",
-              payload: { sessionId: managed.session.id, sessionType: managed.session.type },
+              payload: {
+                sessionId: managed.session.id,
+                sessionType: managed.session.type,
+                cols: size.cols,
+                rows: size.rows,
+              },
             });
             // ring buffer 重放（ADR-0005）：attach 后先补最近输出
             const replay = managed.session.replayData();
@@ -207,12 +254,15 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
           }
           case "detach": {
             attached.delete(message.payload.sessionId);
+            applyMinSize(message.payload.sessionId);
             return;
           }
           case "resize": {
-            const managed = manager.get(message.payload.sessionId);
-            if (managed !== undefined && !managed.session.exited) {
-              managed.session.resize(message.payload.cols, message.payload.rows);
+            // 容量上报（#9）：只有已附加的端参与尺寸协商
+            const { sessionId, cols, rows } = message.payload;
+            if (attached.has(sessionId)) {
+              attached.set(sessionId, { cols, rows });
+              applyMinSize(sessionId);
             }
             return;
           }
@@ -223,7 +273,14 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     });
 
     ws.on("close", () => {
+      const attached = attachments.get(ws);
       attachments.delete(ws);
+      if (attached !== undefined) {
+        // 小屏离开后剩余端的 min 变大，PTY 自动恢复满幅
+        for (const sessionId of attached.keys()) {
+          applyMinSize(sessionId);
+        }
+      }
     });
   });
 

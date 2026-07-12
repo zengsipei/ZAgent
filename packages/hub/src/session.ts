@@ -68,6 +68,11 @@ export class PtySession {
     return this.ringChunks.join("");
   }
 
+  /** 会话当前有效尺寸（自跟踪值；重绘抖动的瞬态尺寸不反映在此）。 */
+  get size(): { cols: number; rows: number } {
+    return { cols: this.cols, rows: this.rows };
+  }
+
   onData(listener: (data: string) => void): void {
     this.pty.onData(listener);
   }
