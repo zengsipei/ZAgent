@@ -89,6 +89,27 @@ export function isValidSessionToken(token: string, rootToken: string, now = Date
 export const AUTH_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 export const MAX_AUTH_FAILURES_PER_WINDOW = 10;
 
+/**
+ * 限速的来源键：X-Forwarded-For 的最后一跳优先，socket 地址兜底。
+ * 主路径部署 Hub 在 Caddy 反代之后，socket 地址恒为 caddy 容器 IP——只按它计数
+ * 会退化成全局锁，10 次坏 token 就能把主人锁在门外。信任 XFF 的依据：
+ * Hub 不监听公网（ADR-0007），能直连它的只有可信反代（Caddy ≥2.5 默认剥离
+ * 不可信的入站 XFF 并写入真实客户端 IP）与本地开发（无 XFF，落到 socket 地址）。
+ */
+export function clientKey(req: {
+  headers: Record<string, string | string[] | undefined>;
+  socket: { remoteAddress?: string | undefined };
+}): string {
+  const header = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(header) ? header.join(",") : (header ?? "");
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  const last = entries[entries.length - 1];
+  return last ?? req.socket.remoteAddress ?? "unknown";
+}
+
 export class AuthFailureLimiter {
   private readonly failures = new Map<string, { count: number; windowStart: number }>();
 
@@ -109,9 +130,9 @@ export class AuthFailureLimiter {
     if (entry === undefined || now - entry.windowStart >= AUTH_FAILURE_WINDOW_MS) {
       // 大量陌生来源撑爆内存前先清一轮过期窗口
       if (this.failures.size >= 10_000) {
-        for (const [key, value] of this.failures) {
+        for (const [staleKey, value] of this.failures) {
           if (now - value.windowStart >= AUTH_FAILURE_WINDOW_MS) {
-            this.failures.delete(key);
+            this.failures.delete(staleKey);
           }
         }
       }

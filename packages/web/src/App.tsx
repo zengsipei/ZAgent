@@ -61,6 +61,12 @@ export function App() {
     return () => window.removeEventListener("hashchange", sync);
   }, []);
 
+  function adoptSession(session: string): void {
+    localStorage.setItem(TOKEN_STORAGE_KEY, session);
+    setToken(session);
+    setPhase("ready");
+  }
+
   useEffect(() => {
     // URL ?token=（随手从 Hub 日志复制粘贴的入口）：立即从地址栏抹掉再换发，
     // 根 token 不留在历史记录也不落 localStorage
@@ -74,9 +80,7 @@ export function App() {
       if (fromUrl !== null && fromUrl !== "") {
         const session = await exchangeToken(fromUrl);
         if (session !== null) {
-          localStorage.setItem(TOKEN_STORAGE_KEY, session);
-          setToken(session);
-          setPhase("ready");
+          adoptSession(session);
           return;
         }
         setFormError("token 未通过验证或 Hub 不可达");
@@ -116,9 +120,7 @@ export function App() {
               setFormError("token 未通过验证或 Hub 不可达");
               return;
             }
-            localStorage.setItem(TOKEN_STORAGE_KEY, session);
-            setToken(session);
-            setPhase("ready");
+            adoptSession(session);
           });
         }}
       >

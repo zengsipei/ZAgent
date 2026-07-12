@@ -18,7 +18,7 @@ import {
   type HubMessage,
 } from "@zagent/protocol";
 
-import { AuthFailureLimiter, isRootToken, issueSessionToken, verifyToken, verifyUpgrade } from "./auth.js";
+import { AuthFailureLimiter, clientKey, isRootToken, issueSessionToken, verifyToken, verifyUpgrade } from "./auth.js";
 import type { HubConfig } from "./config.js";
 import { SessionManager, buildTemplates, type ManagedSession } from "./manager.js";
 import { serveStatic } from "./static.js";
@@ -61,7 +61,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     if (pathname !== "/auth/session" && pathname !== "/auth/check") {
       return false;
     }
-    const ip = req.socket.remoteAddress ?? "unknown";
+    const ip = clientKey(req);
     if (limiter.isBlocked(ip)) {
       res.writeHead(429).end();
       return true;
@@ -214,7 +214,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   }
 
   server.on("upgrade", (req, socket, head) => {
-    const ip = req.socket.remoteAddress ?? "unknown";
+    const ip = clientKey(req);
     if (limiter.isBlocked(ip)) {
       socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
       socket.destroy();
