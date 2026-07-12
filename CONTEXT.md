@@ -13,11 +13,10 @@
 - **通道（Channel）** — 信封的路由键。`control` = 会话管理（list / create / kill / attach / resize）；`session:<id>` = 具体会话的输入输出流。不另设 REST API。
 - **回放缓冲（Ring Buffer）** — Hub 为每个会话保留的最近若干 MB 输出，attach 时重放以恢复画面。
 - **重绘抖动（Resize Nudge）** — attach 重放后微调一次 PTY 尺寸，逼全屏 TUI 整屏重绘以收敛画面。
-- **多端广播** — 同一会话允许多个连接：输出广播、输入不加锁、最后 resize 者决定尺寸。
+- **多端广播** — 同一会话允许多个连接：输出广播、输入不加锁；PTY 尺寸取所有已 attach 端上报容量的最小交集（tmux 式，#9），各端 xterm 网格跟随会话尺寸、大屏留白（#10）。
 - **复活（Resurrect）** — 容器重启后活动任务丢失，用命令模板里的 `claude --continue` / `claude --resume` 预设新建会话找回对话上下文（终端画面与进行中任务不可恢复）；不做 session id 簿记。
 - **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。
-- **边缘认证（Edge Auth）** — Cloudflare Access 在 CF 边缘完成的身份验证；未认证流量不触达 Hub。
-- **应用层底线（App-layer Floor）** — Hub 内写死、不可配置关闭的最低认证：长随机 token 校验 + Origin 白名单。
+- **应用层完整认证（App-layer Auth）** — Hub 内写死、不可配置关闭：长随机根 token + Origin 白名单 + 会话 token 签发（`/auth/session` 换发 30 天期 HMAC token，前端只持久化它）+ 认证失败按 IP 限速。公网直连后没有边缘认证在前，这层是唯一防线（ADR-0007，替代原「边缘认证 + 应用层底线」双层模型）。
 - **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab）。没有它，Claude Code TUI 在手机上不可操作。
 - **headless 会话** — 二期的结构化会话类型（`claude -p --output-format stream-json` / `codex exec --json`），聊天 UI 与 IM 接入的数据源。明确不从 PTY 流中刮取对话。
 
@@ -26,15 +25,14 @@
 ```
 手机 / 桌面浏览器 (PWA: xterm.js + 辅助键条)
         │ WSS（信封协议）
+        │   主路径：IPv6 直连（DDNS-v6）；兜底：国内 VPS 中继（frp）——ADR-0007
         ▼
-Cloudflare Access（边缘认证）
-        │
-cloudflared（sidecar 容器，出站隧道）
+Caddy（sidecar 容器，TLS 终结，唯一入站口 443）
         │ 容器内网（Hub 不监听公网）
         ▼
-Hub（Node/TS）── 应用层底线认证
+Hub（Node/TS）── 应用层完整认证（根 token + 会话 token 签发 + Origin 白名单 + 失败限速）
   ├─ Session[pty] ⇄ claude / codex / bash（node-pty spawn）
-  │       └─ ring buffer · 多端广播
+  │       └─ ring buffer · 多端广播（尺寸取各端容量 min）
   └─ control 通道（list / create / kill / attach / resize）
 
 claude hooks (Notification / Stop) ──► ntfy / Bark ──► 手机推送
@@ -44,16 +42,17 @@ claude hooks (Notification / Stop) ──► ntfy / Bark ──► 手机推送
 
 ## 一期范围
 
-1. Dockerfile + compose（Hub 容器 + cloudflared sidecar；凭证/工作区挂载留给配置）
-2. Hub：WS 信封协议、Session 管理（spawn / ring buffer / 断线不杀 / 多端广播）、token + Origin 底线认证
-3. 前端：会话列表与新建（选 cwd + 命令模板）、xterm.js 终端页、辅助键条、PWA
+1. Dockerfile + compose（Hub 容器 + Caddy TLS sidecar；凭证/工作区挂载留给配置）
+2. Hub：WS 信封协议、Session 管理（spawn / ring buffer / 断线不杀 / 多端广播）、应用层完整认证（根 token + 会话 token 签发 + Origin 白名单 + 失败限速）
+3. 前端：会话列表与新建（选 cwd + 命令模板）、xterm.js 终端页、辅助键条、触摸滚动、PWA
 4. hook → ntfy/Bark 推送闭环
 
 ## 二期方向（架构已预留，不实施）
 
-headless 会话 + 聊天 UI / IM 接入；Web Push；会话级容器隔离。
+headless 会话 + 聊天 UI / IM 接入；Web Push；会话级容器隔离；WebRTC DataChannel P2P（蜂窝 v6 缺失场景的直连补位，ADR-0007 只定方向）。
 
 ## 待验证假设
 
-- **CF 国内击键延迟可接受** — 动工第一周用 ttyd + CF Tunnel 实测；不达标则降级 frp + VPS，并按 ADR-0003 触发「应用层认证转必须」条款。
+- ~~CF 国内击键延迟可接受~~ — **已否决**（spike #1：p50 585–943ms，结构性超标）；改道 IPv6 直连 + VPS 中继兜底（ADR-0007）。
+- **蜂窝 v6 覆盖与光猫开关稳定性** — 直连主路径的两个运维前提（光猫防攻击开关保持关闭、固件升级不重置），公网上线实测后决定是否固化为票。
 - Docker Desktop 常驻内存成本（2–4 GB）长期可接受。

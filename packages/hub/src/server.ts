@@ -18,7 +18,7 @@ import {
   type HubMessage,
 } from "@zagent/protocol";
 
-import { verifyUpgrade } from "./auth.js";
+import { AuthFailureLimiter, isRootToken, issueSessionToken, verifyToken, verifyUpgrade } from "./auth.js";
 import type { HubConfig } from "./config.js";
 import { SessionManager, buildTemplates, type ManagedSession } from "./manager.js";
 import { serveStatic } from "./static.js";
@@ -41,13 +41,86 @@ interface ClientCapacity {
 const MAX_WS_BUFFERED_BYTES = 16 * 1024 * 1024;
 
 export async function startHub(config: HubConfig): Promise<RunningHub> {
+  const limiter = new AuthFailureLimiter();
   const server = http.createServer((req, res) => {
+    if (handleAuthRequest(req, res)) {
+      return;
+    }
     if (config.staticDir === null) {
       res.writeHead(404).end();
       return;
     }
     serveStatic(config.staticDir, req, res);
   });
+
+  // 认证端点（ADR-0007）：POST /auth/session 用根 token 换发会话 token；
+  // GET /auth/check 校验持有的 token 是否仍有效（前端启动时的登出判定）。
+  // 返回 true 表示该请求已被处理（含被限速拒绝）。
+  function handleAuthRequest(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (pathname !== "/auth/session" && pathname !== "/auth/check") {
+      return false;
+    }
+    const ip = req.socket.remoteAddress ?? "unknown";
+    if (limiter.isBlocked(ip)) {
+      res.writeHead(429).end();
+      return true;
+    }
+
+    if (pathname === "/auth/check") {
+      // 同源 GET fetch 不带 Origin 头，这里只验 token；无副作用，限速兜住枚举
+      const header = req.headers.authorization ?? "";
+      const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+      if (token === null || !verifyToken(token, config.token)) {
+        limiter.recordFailure(ip);
+        res.writeHead(401).end();
+        return true;
+      }
+      res.writeHead(204).end();
+      return true;
+    }
+
+    // POST /auth/session：浏览器对 POST 一定带 Origin，同源也强制校验（CSRF 防线）
+    if (req.method !== "POST") {
+      res.writeHead(405).end();
+      return true;
+    }
+    const origin = req.headers.origin;
+    if (origin === undefined || !config.allowedOrigins.has(origin)) {
+      limiter.recordFailure(ip);
+      res.writeHead(403).end();
+      return true;
+    }
+    let body = "";
+    let overflow = false;
+    req.on("data", (chunk: Buffer) => {
+      body += chunk.toString("utf8");
+      if (body.length > 4096) {
+        overflow = true;
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (overflow) {
+        return;
+      }
+      let provided: unknown;
+      try {
+        provided = (JSON.parse(body) as Record<string, unknown>)["token"];
+      } catch {
+        provided = undefined;
+      }
+      // 只有根 token 能签发：会话 token 不能续签自己，到期必须回根凭证
+      if (typeof provided !== "string" || !isRootToken(provided, config.token)) {
+        limiter.recordFailure(ip);
+        res.writeHead(401).end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(issueSessionToken(config.token)));
+    });
+    return true;
+  }
   const wss = new WebSocketServer({ noServer: true });
   const templates = buildTemplates(config.shell);
   const manager = new SessionManager(templates);
@@ -141,8 +214,15 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   }
 
   server.on("upgrade", (req, socket, head) => {
+    const ip = req.socket.remoteAddress ?? "unknown";
+    if (limiter.isBlocked(ip)) {
+      socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     const verdict = verifyUpgrade(req, config);
     if (!verdict.ok) {
+      limiter.recordFailure(ip);
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

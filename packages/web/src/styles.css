@@ -301,6 +301,12 @@ body {
   border-color: var(--accent);
 }
 
+.token-form-error {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--danger);
+}
+
 .token-form button {
   height: 44px;
   border: none;

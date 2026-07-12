@@ -27,9 +27,30 @@ services:
       # 例：- /mnt/f/code:/workspace  （WSL bind；跨 OS I/O 慢，推荐 clone 进卷）
       - workspace:/workspace
 
+  # 公网 TLS 终结（ADR-0007，可选）：docker compose --profile public up -d
+  # 部署步骤（DDNS-v6、光猫设置、防火墙）见 docs/deploy-public.md
+  caddy:
+    image: caddy:2
+    container_name: zagent-caddy
+    profiles: ["public"]
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "80:80" # ACME HTTP-01 挑战
+      - "443:443" # WSS 入站（IPv6 直连）
+    environment:
+      ZAGENT_DOMAIN: ${ZAGENT_DOMAIN:-}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   claude-config:
   codex-config:
   gh-config:
   git-config:
   workspace:
+  caddy-data:
+  caddy-config:

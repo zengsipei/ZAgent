@@ -1,0 +1,5 @@
+# 公网 TLS 终结（ADR-0007）：唯一入站口，反代到容器内网的 Hub。
+# 域名经 .env 的 ZAGENT_DOMAIN 注入；证书 Let's Encrypt 自动申请续期。
+{$ZAGENT_DOMAIN} {
+	reverse_proxy hub:7433
+}
