@@ -119,11 +119,20 @@ export function TerminalView({
     }
     sendInputRef.current = sendInput;
 
-    function sendResize(): void {
+    // 容量上报（#10）：fit 计算出的本端最大 cols/rows 只上报给 Hub，
+    // 不直接设置 xterm 网格——网格一律跟随 Hub 下发的会话尺寸（attached / resized）
+    function reportCapacity(): void {
+      const dims = fit.proposeDimensions();
+      if (dims === undefined || !Number.isInteger(dims.cols) || !Number.isInteger(dims.rows)) {
+        return;
+      }
+      if (dims.cols <= 0 || dims.rows <= 0) {
+        return;
+      }
       sendMessage({
         channel: CONTROL_CHANNEL,
         type: "resize",
-        payload: { sessionId, cols: term.cols, rows: term.rows },
+        payload: { sessionId, cols: dims.cols, rows: dims.rows },
       });
     }
 
@@ -161,12 +170,14 @@ export function TerminalView({
         }
         if (message.type === "attached" && message.payload.sessionId === sessionId) {
           // 重连恢复：清掉旧画面再吃 ring buffer 重放，避免内容叠加；
-          // 随后服务端 resize 抖动逼全屏 TUI 整屏重绘收敛
+          // 随后服务端 resize 抖动逼全屏 TUI 整屏重绘收敛。
+          // 网格先切到会话当前尺寸，重放字节流才按正确坐标解释（#10）
           term.reset();
+          term.resize(message.payload.cols, message.payload.rows);
           reconnectAttempt = 0;
           setStatusLine({ text: `已附加会话 ${sessionId}`, tone: "ok" });
           setAttached(true);
-          sendResize();
+          reportCapacity();
           term.focus();
           return;
         }
@@ -178,6 +189,10 @@ export function TerminalView({
         if (message.channel === sessionChannel(sessionId)) {
           if (message.type === "output") {
             term.write(base64ToBytes(message.payload.data));
+          } else if (message.type === "resized") {
+            // 会话有效尺寸变化（各端容量 min 重算）：跟随重建网格，
+            // 小于本端容量时画面贴左上、余下留白
+            term.resize(message.payload.cols, message.payload.rows);
           } else if (message.type === "exit") {
             sessionExited = true;
             setStatusLine({
@@ -238,8 +253,9 @@ export function TerminalView({
       }
       sendInput(out);
     });
-    const resizeListener = term.onResize(() => sendResize());
-    const observer = new ResizeObserver(() => fit.fit());
+    // 窗口变化（转屏、键盘弹起收缩 --app-height）→ 重新上报本端容量；
+    // 网格是否变化由 Hub 的 min 重算决定，不在本端直接 fit
+    const observer = new ResizeObserver(() => reportCapacity());
     observer.observe(container);
 
     return () => {
@@ -251,7 +267,6 @@ export function TerminalView({
       window.removeEventListener("online", reconnectNow);
       observer.disconnect();
       dataListener.dispose();
-      resizeListener.dispose();
       ws?.close();
       term.dispose();
       termRef.current = null;
