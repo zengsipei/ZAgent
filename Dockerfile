@@ -30,5 +30,12 @@ ENV CLAUDE_CONFIG_DIR=/root/.claude \
 
 RUN mkdir -p /workspace
 
+# 通知闭环（#8）：hook 推送脚本进 PATH；entrypoint 启动时向凭证卷幂等补种
+# claude hooks / codex notify 配置（卷会遮住镜像内的 /root/.claude，烧进镜像没用）
+COPY docker/zagent-notify /usr/local/bin/zagent-notify
+COPY docker/entrypoint.sh /usr/local/bin/zagent-entrypoint
+RUN chmod +x /usr/local/bin/zagent-notify /usr/local/bin/zagent-entrypoint
+
 EXPOSE 7433
+ENTRYPOINT ["zagent-entrypoint"]
 CMD ["npm", "run", "start", "-w", "@zagent/hub"]

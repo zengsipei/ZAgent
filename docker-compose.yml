@@ -13,6 +13,10 @@ services:
       ZAGENT_TOKEN: ${ZAGENT_TOKEN:?请在 .env 中设置 ZAGENT_TOKEN（至少 32 字符的长随机串）}
       # 同源访问（Hub 托管 web）固定放行；隧道域名经 ZAGENT_EXTRA_ORIGINS 追加
       ZAGENT_ALLOWED_ORIGINS: http://localhost:7433,http://127.0.0.1:7433${ZAGENT_EXTRA_ORIGINS:+,$ZAGENT_EXTRA_ORIGINS}
+      # 通知闭环（#8，可选）：ntfy / Bark 推送目标与点开通知要回到的 PWA 地址
+      ZAGENT_NTFY_URL: ${ZAGENT_NTFY_URL:-}
+      ZAGENT_BARK_URL: ${ZAGENT_BARK_URL:-}
+      ZAGENT_PWA_URL: ${ZAGENT_PWA_URL:-}
     volumes:
       # 凭证卷（安全等级等同 API key）：首次 docker exec 登录一次，之后容器随便重建
       - claude-config:/root/.claude
