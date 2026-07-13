@@ -49,7 +49,7 @@ export class PtySession {
       cols: options.cols ?? 80,
       rows: options.rows ?? 24,
       cwd: options.cwd,
-      env: process.env as Record<string, string>,
+      env: cleanEnv(),
     });
     this.pty.onExit(() => {
       this.exited = true;
@@ -150,6 +150,23 @@ export class PtySession {
       this.pty.kill();
     }
   }
+}
+
+// 会话环境 = 宿主环境去掉 Claude Code 的会话标记（CLAUDECODE、CLAUDE_CODE_SESSION_ID 等）：
+// Hub 若由某个 Claude Code 会话里的终端启动，这些标记会泄进被控 CLI，
+// 让它自认嵌套子会话而行为漂移。CLAUDE_CONFIG_DIR 例外保留（Docker 凭证卷依赖，ADR-0002）。
+function cleanEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) {
+      continue;
+    }
+    if ((key === "CLAUDECODE" || key.startsWith("CLAUDE_")) && key !== "CLAUDE_CONFIG_DIR") {
+      continue;
+    }
+    env[key] = value;
+  }
+  return env;
 }
 
 // Windows 上 node-pty 需要可执行文件的完整路径（裸命令名会报 File not found），

@@ -14,7 +14,7 @@
 - **回放缓冲（Ring Buffer）** — Hub 为每个会话保留的最近若干 MB 输出，attach 时重放以恢复画面。
 - **重绘抖动（Resize Nudge）** — attach 重放后微调一次 PTY 尺寸，逼全屏 TUI 整屏重绘以收敛画面。
 - **多端广播** — 同一会话允许多个连接：输出广播、输入不加锁；PTY 尺寸取所有已 attach 端上报容量的最小交集（tmux 式，#9），各端 xterm 网格跟随会话尺寸、大屏留白（#10）。
-- **复活（Resurrect）** — 容器重启后活动任务丢失，用命令模板里的 `claude --continue` / `claude --resume` 预设新建会话找回对话上下文（终端画面与进行中任务不可恢复）；不做 session id 簿记。
+- **复活（Resurrect）** — 容器重启后活动任务丢失，新建 claude 会话时在「附加参数」填 `--continue` / `--resume` 找回对话上下文（终端画面与进行中任务不可恢复）；claude 历史按 cwd 分桶，必须选原对话所在的工作目录；不设预设模板、不做 session id 簿记。
 - **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。
 - **应用层完整认证（App-layer Auth）** — Hub 内写死、不可配置关闭：长随机根 token + Origin 白名单 + 会话 token 签发（`/auth/session` 换发 30 天期 HMAC token，前端只持久化它）+ 认证失败按 IP 限速。公网直连后没有边缘认证在前，这层是唯一防线（ADR-0007，替代原「边缘认证 + 应用层底线」双层模型）。
 - **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab）。没有它，Claude Code TUI 在手机上不可操作。
