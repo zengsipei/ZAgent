@@ -561,3 +561,20 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+
+/* 诊断浮层（#7 临时）：常显环境事实，穿透触摸不碍操作；采数结束随组件一并移除 */
+.debug-overlay {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 52px);
+  right: 8px;
+  z-index: 9;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: oklch(0.15 0.01 200 / 0.85);
+  color: var(--accent);
+  font: 10px/1.6 ui-monospace, Consolas, monospace;
+  white-space: pre;
+  pointer-events: none;
+}

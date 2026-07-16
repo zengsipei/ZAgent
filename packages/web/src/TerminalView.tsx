@@ -146,7 +146,9 @@ export function TerminalView({
     } catch {
       webgl = null;
     }
-    // 确认渲染路径（远程调试面包屑）：正常应为 webgl，dom 表示该机静默降级
+    // 确认渲染路径（远程调试面包屑）：正常应为 webgl，dom 表示该机静默降级。
+    // dataset 供诊断浮层读取——standalone 真机没有 console
+    document.documentElement.dataset["zagentRenderer"] = webgl !== null ? "webgl" : "dom";
     console.info(`[zagent] renderer: ${webgl !== null ? "webgl" : "dom"}`);
     fit.fit();
     termRef.current = term;
@@ -635,6 +637,7 @@ export function TerminalView({
         {statusLine.text}
       </div>
       <div className="terminal-container" ref={containerRef} />
+      <DebugOverlay kbBlindRef={kbBlindRef} termRef={termRef} />
       <KeyBar
         ctrl={ctrl}
         disabled={!attached}
@@ -645,4 +648,63 @@ export function TerminalView({
       />
     </div>
   );
+}
+
+// 诊断浮层（#7 PWA 返工三轮，临时）：standalone 真机没有 console，把判定修复方向的
+// 环境事实常显在屏上，截图即反馈；pointer-events 穿透不碍操作。采数结束整体移除
+//（#13 诊断浮层同款生命周期）。键盘态直接读 DOM 事实（inputMode/焦点），不镜像 React 态。
+function DebugOverlay({
+  kbBlindRef,
+  termRef,
+}: {
+  kbBlindRef: { readonly current: boolean };
+  termRef: { readonly current: Terminal | null };
+}) {
+  const [snapshot, setSnapshot] = useState("");
+  useEffect(() => {
+    // 帧率：rAF 帧间隔滚动窗口（~2s），平均 fps + 最差帧（卡顿尖峰）
+    let frames: number[] = [];
+    let prev = performance.now();
+    let raf = requestAnimationFrame(function loop(now: number) {
+      frames.push(now - prev);
+      prev = now;
+      if (frames.length > 120) {
+        frames = frames.slice(-120);
+      }
+      raf = requestAnimationFrame(loop);
+    });
+    const timer = window.setInterval(() => {
+      const ua = navigator.userAgent;
+      const chrome = /Chrome\/(\d+)/.exec(ua)?.[1] ?? "?";
+      const android = /Android (\d+)/.exec(ua)?.[1] ?? "?";
+      const mode =
+        ["standalone", "minimal-ui", "fullscreen", "browser"].find((m) =>
+          window.matchMedia(`(display-mode: ${m})`).matches,
+        ) ?? "无";
+      const vk = navigator.virtualKeyboard;
+      const vkLine =
+        vk === undefined
+          ? "vk=无"
+          : `vk=有 ovl=${String(vk.overlaysContent)} kbH=${vk.boundingRect.height.toFixed(0)}`;
+      const appH = document.documentElement.style.getPropertyValue("--app-height") || "(未设)";
+      const ta = termRef.current?.textarea;
+      const buf = termRef.current?.buffer.active.type ?? "?";
+      const avg = frames.length > 0 ? frames.reduce((a, b) => a + b, 0) / frames.length : 0;
+      const worst = frames.length > 0 ? Math.max(...frames) : 0;
+      setSnapshot(
+        [
+          `Chrome/${chrome} Android/${android} mode=${mode}`,
+          `${vkLine} 盲=${kbBlindRef.current ? "Y" : "N"}`,
+          `vv=${window.visualViewport?.height.toFixed(0) ?? "无"} inner=${window.innerHeight} app=${appH}`,
+          `im=${ta?.inputMode ?? "?"} 焦点=${ta !== undefined && document.activeElement === ta ? "ta" : "其他"}`,
+          `渲染=${document.documentElement.dataset["zagentRenderer"] ?? "?"} buf=${buf} fps=${avg > 0 ? (1000 / avg).toFixed(0) : "?"} 最差=${worst.toFixed(0)}ms`,
+        ].join("\n"),
+      );
+    }, 250);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(timer);
+    };
+  }, [kbBlindRef, termRef]);
+  return <pre className="debug-overlay">{snapshot}</pre>;
 }
