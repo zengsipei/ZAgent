@@ -31,15 +31,15 @@ const TERMINAL_THEME = {
 
 type StatusTone = "info" | "ok" | "error";
 
-// standalone（PWA 窗口）下的 VirtualKeyboard API（#7 真机返工）：
-// 旧版 Android Chrome 的 standalone 窗口键盘为覆盖式——visualViewport 高度不变，
-// 「键条顶起」与「返回键收起检测」双双失灵。VK API 是该形态下唯一确定信号：
-// overlaysContent 接管布局后 geometrychange 给出键盘精确矩形（高度 0 = 收起）。
-// 浏览器标签页不启用，原 visualViewport 路径已验证可用。
-function standaloneVirtualKeyboard(): VirtualKeyboard | undefined {
-  return window.matchMedia("(display-mode: standalone)").matches
-    ? navigator.virtualKeyboard
-    : undefined;
+// VirtualKeyboard API（Chrome 94+，#7 真机返工二轮）：存在即启用，不按 display-mode 门控。
+// 教训：无 GMS/WebAPK 铸造不可达的环境（国内常态）里「安装」产物是快捷方式窗口，
+// display-mode 上报 browser 但键盘行为是覆盖式——visualViewport 不缩，「键条顶起」与
+// 「返回键收起检测」双双失灵。按形态门控会漏掉它；统一 VK 接管让三种形态
+//（真 standalone / 快捷方式窗口 / 浏览器标签）走同一条确定信号：overlaysContent 后
+// geometrychange 给出键盘精确矩形（高度 0 = 收起）。桌面 Chrome 有 API 无软键盘，
+// 高度恒 0 无副作用；iOS 无此 API，走 visualViewport 路径。
+function virtualKeyboardApi(): VirtualKeyboard | undefined {
+  return navigator.virtualKeyboard;
 }
 
 export function TerminalView({
@@ -72,9 +72,9 @@ export function TerminalView({
   }
 
   // 系统键盘弹起时应用整体收缩，键条始终贴在键盘上方。
-  // standalone 走 VirtualKeyboard（覆盖式键盘，visualViewport 不动）；浏览器走 visualViewport
+  // 有 VK API（Android Chrome 全形态）走 VK 接管；无 VK（iOS）走 visualViewport
   useEffect(() => {
-    const vk = standaloneVirtualKeyboard();
+    const vk = virtualKeyboardApi();
     if (vk !== undefined) {
       vk.overlaysContent = true;
       const onGeometry = (): void => {
@@ -187,14 +187,14 @@ export function TerminalView({
       }
     };
     vv?.addEventListener("resize", onVvResize);
-    // standalone：覆盖式键盘下上面的 vv 判定永不触发，收起检测改听 VK 几何（高度归零=收起）
-    const standaloneVk = standaloneVirtualKeyboard();
+    // VK 可用时收起检测听 VK 几何（高度归零=收起）——覆盖式键盘下上面的 vv 判定永不触发
+    const vkApi = virtualKeyboardApi();
     const onVkGeometry = (): void => {
-      if (standaloneVk !== undefined && standaloneVk.boundingRect.height === 0) {
+      if (vkApi !== undefined && vkApi.boundingRect.height === 0) {
         lockKeyboard();
       }
     };
-    standaloneVk?.addEventListener("geometrychange", onVkGeometry);
+    vkApi?.addEventListener("geometrychange", onVkGeometry);
 
     // 断线自动重连（ADR-0005：连接只是观察者，断开重连即恢复）。
     // disposed = 组件卸载；sessionExited = 会话已退出，二者都不再重连。
@@ -554,7 +554,7 @@ export function TerminalView({
       container.removeEventListener("touchcancel", onTouchEnd);
       textarea?.removeEventListener("blur", onTaBlur);
       vv?.removeEventListener("resize", onVvResize);
-      standaloneVk?.removeEventListener("geometrychange", onVkGeometry);
+      vkApi?.removeEventListener("geometrychange", onVkGeometry);
       dataListener.dispose();
       ws?.close();
       term.dispose();
@@ -589,7 +589,7 @@ export function TerminalView({
   //（standalone 无 VK API 的老 Chrome）——此后滚动手势以 blur 保底（onTouchMove）
   function armKeyboardBlindProbe(ta: HTMLTextAreaElement): void {
     kbBlindRef.current = false;
-    if (standaloneVirtualKeyboard() !== undefined) {
+    if (virtualKeyboardApi() !== undefined) {
       return; // VK 几何是确定信号，无需盲探
     }
     const base = window.visualViewport?.height ?? window.innerHeight;
