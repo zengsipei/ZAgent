@@ -1,6 +1,6 @@
 # ADR-0002: 整套运行于 Docker，单容器多会话
 
-- 状态：已接受
+- 状态：已接受；适用域更新（2026-07-16）：Docker 为**服务器形态**（远程 Linux 主机，如 1panel 托管——无人值守 auto-approve 场景，本 ADR 的安全论证所在）；Windows 本机日用改为**直跑形态**不经容器（owner 人在环，接受本机爆炸半径，不为日用支付 Docker Desktop 常驻内存）。单容器多会话决策在 Docker 形态内不变，配方见 `docs/deploy.md`
 - 日期：2026-07-09
 
 ## 背景

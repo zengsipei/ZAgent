@@ -1,6 +1,6 @@
 # ZAgent — 远程控制本地编程 CLI
 
-浏览器（手机优先）远程驱动本地 Docker 容器内的 Claude Code / codex 等编程 CLI。PTY + WebSocket 伪终端为一期主轴，结构化 IM 对话为二期方向。自用 + 学习项目，单用户自托管。
+浏览器（手机优先）远程驱动 Hub 所在机器上的 Claude Code / codex 等编程 CLI。部署双形态（ADR-0002 适用域）：Windows 本机直跑为日用形态（控制本机工作区），Docker 单容器为服务器形态（远程 Linux 主机，如 1panel 托管）。PTY + WebSocket 伪终端为一期主轴，结构化 IM 对话为二期方向。自用 + 学习项目，单用户自托管。
 
 设计定型于 2026-07-09 的 grilling session，关键取舍见 `docs/adr/`。
 
@@ -15,7 +15,7 @@
 - **重绘抖动（Resize Nudge）** — attach 重放后微调一次 PTY 尺寸，逼全屏 TUI 整屏重绘以收敛画面。
 - **多端广播** — 同一会话允许多个连接：输出广播、输入不加锁；PTY 尺寸取所有已 attach 端上报容量的最小交集（tmux 式，#9），各端 xterm 网格跟随会话尺寸、大屏留白（#10）。
 - **复活（Resurrect）** — 容器重启后活动任务丢失，新建 claude 会话时在「附加参数」填 `--continue` / `--resume` 找回对话上下文（终端画面与进行中任务不可恢复）；claude 历史按 cwd 分桶，必须选原对话所在的工作目录；不设预设模板、不做 session id 簿记。
-- **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。
+- **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。Docker 服务器形态的概念；Win 直跑形态直接用本机登录态。
 - **应用层完整认证（App-layer Auth）** — Hub 内写死、不可配置关闭：长随机根 token + Origin 白名单 + 会话 token 签发（`/auth/session` 换发 30 天期 HMAC token，前端只持久化它）+ 认证失败按 IP 限速。主路径 Tailscale 有 WireGuard 设备认证在前，这层是纵深防御；对 IPv6 直连兜底路径没有边缘认证在前，这层是唯一防线（ADR-0007）。
 - **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab）。没有它，Claude Code TUI 在手机上不可操作。
 - **headless 会话** — 二期的结构化会话类型（`claude -p --output-format stream-json` / `codex exec --json`），聊天 UI 与 IM 接入的数据源。明确不从 PTY 流中刮取对话。
@@ -36,7 +36,7 @@ Hub（Node/TS，不监听公网）── 应用层完整认证（根 token + 会
 claude hooks (Notification / Stop) ──► ntfy / Bark ──► 手机推送
 ```
 
-单容器多会话：Hub 与它 spawn 的全部 CLI 进程同容器（fat image 含常用工具链）。项目代码可见性属于部署配置（volumes 自行挂载，git clone 或 bind mount 均可），不是产品功能。
+部署双形态（ADR-0002 适用域）：**Win 本机直跑（日用）**——Hub 与 CLI 同宿主机，控制本机工作区；**Docker 单容器多会话（服务器形态）**——fat image 含常用工具链，面向远程 Linux 主机（如 1panel 托管）。项目代码可见性属于部署配置（volumes 自行挂载，git clone 或 bind mount 均可），不是产品功能。
 
 ## 一期范围
 
@@ -53,4 +53,4 @@ headless 会话 + 聊天 UI / IM 接入；Web Push；会话级容器隔离。（
 
 - ~~CF 国内击键延迟可接受~~ — **已否决**（spike #1：p50 585–943ms，结构性超标）；改道 Tailscale 主路径 + IPv6 直连兜底（ADR-0007）。
 - **Tailscale 控制面国内可达性** — 主路径的结构性第三方依赖（数据面 P2P 建立后不依赖；换网后端点重协调需要），不可达时切 IPv6 直连兜底（`--profile public`）。蜂窝 v6 覆盖与光猫开关稳定性随之降为兜底路径的前提。
-- Docker Desktop 常驻内存成本（2–4 GB）长期可接受。
+- ~~Docker Desktop 常驻内存成本（2–4 GB）长期可接受~~ — **已裁决**（2026-07-16）：不为日用支付，本机日用转 Win 直跑形态，Docker 定位为服务器形态（远程 Linux 主机，如 1panel）。
