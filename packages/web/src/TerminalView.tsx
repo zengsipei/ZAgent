@@ -91,6 +91,8 @@ export function TerminalView({
       fontSize: 14,
       fontFamily: TERMINAL_FONT,
       theme: TERMINAL_THEME,
+      // 亚行插值抹平整行滚动的格子感（#13）：触摸拖拽/惯性都按行滚，无插值时视觉逐格跳
+      smoothScrollDuration: 125,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -108,17 +110,44 @@ export function TerminalView({
     } catch {
       webgl = null;
     }
+    // 远程调试时确认渲染路径（仍卡顿先看这里是不是降级成 dom 了）
+    console.info(`[zagent] renderer: ${webgl !== null ? "webgl" : "dom"}`);
     fit.fit();
     termRef.current = term;
 
-    // 移动端键盘显式呼出（#13）：触摸永不聚焦，聚焦只走键条 ⌨ 键
+    // 移动端键盘显式呼出（#13）：键盘只走键条 ⌨ 键。
+    // 核心防线是 inputMode=none——Android 上聚焦元素被触摸就可能唤起键盘、返回键收起
+    // 键盘又不触发 blur，靠拦 click 拦不干净；none 让 textarea 即使聚焦也不唤起键盘。
+    // ⌨ 呼出时才切 text；任何收起路径（blur / 返回键）都拨回 none 锁死。
     const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
-    // 键盘态跟随 xterm 隐藏 textarea 的焦点：⌨ 键点亮 = 系统键盘弹出
     const textarea = term.textarea;
-    const onTaFocus = (): void => setKbOpen(true);
-    const onTaBlur = (): void => setKbOpen(false);
-    textarea?.addEventListener("focus", onTaFocus);
+    if (coarsePointer && textarea !== undefined) {
+      textarea.inputMode = "none";
+    }
+    function lockKeyboard(): void {
+      setKbOpen(false);
+      if (coarsePointer && textarea !== undefined) {
+        textarea.inputMode = "none";
+      }
+    }
+    const onTaBlur = (): void => lockKeyboard();
     textarea?.addEventListener("blur", onTaBlur);
+    // Android 返回键收起键盘不 blur：视口高度骤增（宽度不变）判定系统收起，拨回安全态
+    const vv = window.visualViewport;
+    let vvHeight = vv?.height ?? 0;
+    let vvWidth = vv?.width ?? 0;
+    const onVvResize = (): void => {
+      if (vv === null) {
+        return;
+      }
+      const keyboardDismissed = vv.height - vvHeight > 120 && Math.abs(vv.width - vvWidth) < 1;
+      vvHeight = vv.height;
+      vvWidth = vv.width;
+      if (keyboardDismissed) {
+        lockKeyboard();
+      }
+    };
+    vv?.addEventListener("resize", onVvResize);
 
     // 断线自动重连（ADR-0005：连接只是观察者，断开重连即恢复）。
     // disposed = 组件卸载；sessionExited = 会话已退出，二者都不再重连。
@@ -285,18 +314,20 @@ export function TerminalView({
     const observer = new ResizeObserver(() => reportCapacity());
     observer.observe(container);
 
-    // 触摸滚动桥接（#11/#13）：xterm.js 不处理触摸手势，把竖向滑动映射为 scrollLines
-    // （内容跟随手指：下拉看历史，上推回底部；未到整行的位移累积到下一次）。
-    // 松手按末速度惯性续滚（#13）；全屏 TUI（alternate screen）无 scrollback 不滚动。
-    // 关键（#13）：触摸序列一律 preventDefault 掉浏览器合成的 click，使触摸永不聚焦、
-    // 永不弹系统键盘——键盘只由键条 ⌨ 键显式呼出。位移超过 TOUCH_SLOP 才算滚动手势。
+    // 触摸滚动桥接（#11/#13）：xterm.js 不处理触摸手势。
+    // 普通缓冲：竖向滑动映射为 scrollLines（内容跟手，未整行的位移累积到下一次）；
+    // 全屏 TUI（alternate screen、未开鼠标追踪）：映射为 ↑/↓ 方向键——与 xterm 桌面
+    // 滚轮在 alternate 下的行为一致，claude / less 等应用自身的滚动语义得以工作；
+    // 开了鼠标追踪的 TUI 只吞手势不代打。松手按末速度惯性续滚，触摸随时打断。
+    // 触摸序列一律 preventDefault 掉合成 click：触摸永不聚焦、永不弹键盘（#13）。
     const TOUCH_SLOP_PX = 8;
+    const TUI_MAX_LINES_PER_STEP = 3;
     let touchY: number | null = null;
     let touchCarry = 0;
     let touchScrolling = false;
     let lastMoveY = 0;
     let lastMoveT = 0;
-    let velocity = 0; // 像素/毫秒，正=手指上移（内容向历史滚）
+    let velocity = 0; // 像素/毫秒，正=手指上移（向内容更新方向）
     let inertiaRaf: number | null = null;
 
     function cellHeightPx(): number {
@@ -311,8 +342,22 @@ export function TerminalView({
       }
     }
 
-    function isAltScreen(): boolean {
-      return term.buffer.active.type === "alternate";
+    // 把「滚 N 行」翻译到当前缓冲：普通缓冲滚视口；TUI 发方向键（应用自己滚，行数截幅防灌键）
+    function applyLines(lines: number): void {
+      if (lines === 0) {
+        return;
+      }
+      if (term.buffer.active.type !== "alternate") {
+        term.scrollLines(lines);
+        return;
+      }
+      if (term.modes.mouseTrackingMode !== "none") {
+        return;
+      }
+      const capped = Math.max(-TUI_MAX_LINES_PER_STEP, Math.min(TUI_MAX_LINES_PER_STEP, lines));
+      const app = term.modes.applicationCursorKeysMode;
+      const seq = capped > 0 ? (app ? "\x1bOB" : "\x1b[B") : app ? "\x1bOA" : "\x1b[A";
+      sendInput(seq.repeat(Math.abs(capped)));
     }
 
     function onTouchStart(event: TouchEvent): void {
@@ -331,11 +376,6 @@ export function TerminalView({
       if (touchY === null || event.touches.length !== 1) {
         return;
       }
-      if (isAltScreen()) {
-        // TUI 不滚动，但仍吞掉手势：不 preventDefault 会被合成 click 弹键盘（#13）
-        event.preventDefault();
-        return;
-      }
       const y = event.touches[0]!.clientY;
       if (!touchScrolling) {
         if (Math.abs(y - touchY) < TOUCH_SLOP_PX) {
@@ -343,6 +383,7 @@ export function TerminalView({
         }
         touchScrolling = true;
       }
+      event.preventDefault();
       const cellHeight = cellHeightPx();
       if (cellHeight <= 0) {
         return;
@@ -353,16 +394,12 @@ export function TerminalView({
       // 末速度用于惯性：像素位移 / 时间间隔（指数平滑压抖动）
       const dt = event.timeStamp - lastMoveT;
       if (dt > 0) {
-        const v = (lastMoveY - y) / dt;
-        velocity = velocity * 0.4 + v * 0.6;
+        velocity = velocity * 0.4 + ((lastMoveY - y) / dt) * 0.6;
         lastMoveY = y;
         lastMoveT = event.timeStamp;
       }
       touchY = y;
-      if (lines !== 0) {
-        term.scrollLines(lines);
-      }
-      event.preventDefault();
+      applyLines(lines);
     }
 
     function onTouchEnd(event: TouchEvent): void {
@@ -373,27 +410,24 @@ export function TerminalView({
       if (event.cancelable) {
         event.preventDefault();
       }
-      if (!wasScrolling || isAltScreen()) {
-        return;
-      }
       const cellHeight = cellHeightPx();
-      if (cellHeight <= 0 || Math.abs(velocity) < 0.05) {
+      if (!wasScrolling || cellHeight <= 0 || Math.abs(velocity) < 0.05) {
         return;
       }
-      // 惯性：末速度按帧衰减续滚，复用整行换算与位移累积；下次触摸打断
-      let v = velocity; // 像素/毫秒
+      // 惯性：末速度按帧衰减续滚，复用整行换算与位移累积；下次触摸打断。
+      // TUI 摩擦更大：方向键代打的场景灌太多键比滚太少更糟
+      let v = velocity;
       let carry = touchCarry;
       let prevT = event.timeStamp;
+      const friction = term.buffer.active.type === "alternate" ? 0.88 : 0.92;
       const step = (now: number): void => {
-        const frame = now - prevT;
+        const frame = Math.min(now - prevT, 64);
         prevT = now;
         carry += v * frame;
         const lines = Math.trunc(carry / cellHeight);
         carry -= lines * cellHeight;
-        if (lines !== 0) {
-          term.scrollLines(lines);
-        }
-        v *= 0.92; // 每帧衰减，约 0.3s 收敛
+        applyLines(lines);
+        v *= friction;
         if (Math.abs(v) > 0.01) {
           inertiaRaf = requestAnimationFrame(step);
         } else {
@@ -421,8 +455,8 @@ export function TerminalView({
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
-      textarea?.removeEventListener("focus", onTaFocus);
       textarea?.removeEventListener("blur", onTaBlur);
+      vv?.removeEventListener("resize", onVvResize);
       dataListener.dispose();
       ws?.close();
       term.dispose();
@@ -450,17 +484,30 @@ export function TerminalView({
     updateCtrl(ctrl === "off" ? "once" : ctrl === "once" ? "lock" : "off");
   }
 
-  // ⌨ 键（#13）：移动端键盘唯一入口。focus 弹出系统键盘、blur 收起；
-  // 必须在用户手势事件内同步调用，iOS 才允许程序化弹出
+  // ⌨ 键（#13）：移动端键盘唯一入口。textarea 常态 inputMode=none（被聚焦也不唤键盘），
+  // 呼出时切 text 并（重）聚焦——必须在用户手势事件内同步调用；收起时先拨回 none 再 blur，
+  // 双保险：Android 返回键收过键盘后焦点还在，单靠 blur 状态会漂
   function handleKeyboardTap(): void {
     const term = termRef.current;
     if (term === null) {
       return;
     }
+    const ta = term.textarea;
+    if (ta === undefined) {
+      return;
+    }
     if (kbOpen) {
+      ta.inputMode = "none";
       term.blur();
+      setKbOpen(false);
     } else {
+      ta.inputMode = "text";
+      if (document.activeElement === ta) {
+        // 残留聚焦时仅改 inputMode 不会唤起键盘，blur→focus 强刷一次
+        ta.blur();
+      }
       term.focus();
+      setKbOpen(true);
     }
   }
 
