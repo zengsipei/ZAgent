@@ -1,6 +1,6 @@
 # ADR-0003: 隧道无关设计，CF Access 边缘认证 + 不可关闭的应用层底线
 
-- 状态：已接受；第 2 条（CF Tunnel + CF Access 路线）被 ADR-0007 替代（spike #1 实测延迟 no-go），第 4 条绑定条款由 ADR-0007 触发并落地
+- 状态：已接受；第 2 条（CF Tunnel + CF Access 路线）被 ADR-0007 替代（spike #1 实测延迟 no-go；现行：Tailscale 主路径 + IPv6 直连兜底），第 4 条绑定条款之完整认证已由 ADR-0007 预先落地（对无边缘认证的 IPv6 兜底路径为唯一防线）；背景中弃选 Tailscale 的理由被 ADR-0007 决策沿革推翻
 - 日期：2026-07-09
 
 ## 背景

@@ -5,7 +5,7 @@ services:
     build: .
     container_name: zagent-hub
     restart: unless-stopped
-    # Hub 监听容器内网；宿主机端口映射仅绑定 localhost（供本地开发与后续隧道接入）
+    # Hub 监听容器内网；宿主机端口映射仅绑定 localhost（供本地开发，及主路径 tailscale serve 反代）
     ports:
       - "127.0.0.1:7433:7433"
     environment:
@@ -27,8 +27,8 @@ services:
       # 例：- /mnt/f/code:/workspace  （WSL bind；跨 OS I/O 慢，推荐 clone 进卷）
       - workspace:/workspace
 
-  # 公网 TLS 终结（ADR-0007，可选）：docker compose --profile public up -d
-  # 部署步骤（DDNS-v6、光猫设置、防火墙）见 docs/deploy-public.md
+  # IPv6 直连兜底路径的公网 TLS 终结（ADR-0007，默认不启用）：docker compose --profile public up -d
+  # 主路径是 Tailscale（tailscale serve 自带 TLS，不需要本服务）；部署步骤见 docs/deploy.md 与 docs/deploy-public.md
   caddy:
     image: caddy:2
     container_name: zagent-caddy
@@ -38,7 +38,7 @@ services:
       - hub
     ports:
       - "80:80" # ACME HTTP-01 挑战
-      - "443:443" # WSS 入站（IPv6 直连）
+      - "443:443" # WSS 入站（IPv6 直连兜底）
     environment:
       ZAGENT_DOMAIN: ${ZAGENT_DOMAIN:-}
     volumes:

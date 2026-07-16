@@ -1,4 +1,5 @@
-# 公网 TLS 终结（ADR-0007）：唯一入站口，反代到容器内网的 Hub。
+# IPv6 直连兜底路径的 TLS 终结（ADR-0007，`--profile public` 才启用）：唯一入站口，反代到容器内网的 Hub。
+# 主路径 Tailscale 不用它（tailscale serve 自带 TLS）。
 # 域名经 .env 的 ZAGENT_DOMAIN 注入；证书 Let's Encrypt 自动申请续期。
 {$ZAGENT_DOMAIN} {
 	reverse_proxy hub:7433

@@ -1,6 +1,7 @@
-// 应用层认证（ADR-0007，替代 ADR-0003 的底线条款）：公网直连后没有边缘认证在前，
-// 这层是唯一防线——长随机根 token + Origin 白名单 + 会话 token 签发 + 失败限速。
-// token 与 Origin 校验没有开关——「可配置关闭」本身就是被否决的选项。
+// 应用层完整认证（ADR-0007）：长随机根 token + Origin 白名单 + 会话 token 签发 + 失败限速。
+// 主路径 Tailscale 有 WireGuard 设备认证在前，这层是纵深防御（tailnet 内设备被攻破/手机丢失时的内层闸）；
+// IPv6 直连兜底路径没有边缘认证在前，这层是唯一防线。token 与 Origin 校验没有开关——
+// 「可配置关闭」本身就是被否决的选项。
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 

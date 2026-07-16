@@ -1,6 +1,8 @@
-# 公网上线部署指南（ADR-0007）
+# IPv6 直连部署指南（兜底路径，ADR-0007）
 
-把 Hub 安全地暴露到公网，手机蜂窝网络下日用。主路径 IPv6 直连（DDNS-v6 + WSS + 应用层完整认证），VPS 中继（frp）兜底。前置阅读：`docs/deploy.md`（基础容器部署）。
+> **这是兜底，不是主路径**。主路径是 Tailscale（零公网入站，见 `docs/deploy.md`「远程接入」节）；仅当 Tailscale 控制面不可达或政策变化时启用本方案。启用期间光猫防攻击保护关闭、全内网设备裸对公网 v6 扫描——恢复主路径后建议把开关关回并 `docker compose --profile public down`。
+
+把 Hub 经 IPv6 直连安全地暴露到公网：DDNS-v6 + WSS + 应用层完整认证。前置阅读：`docs/deploy.md`（基础容器部署）。
 
 ## 前提
 
@@ -69,7 +71,9 @@ Caddy 自动向 Let's Encrypt 申请证书（HTTP-01，走 80 端口）并续期
 - 会话 token 无状态（HMAC），**吊销 = 更换 `ZAGENT_TOKEN` 并重启**——怀疑泄露时这样做，所有已发会话 token 立即全部失效。
 - 根 token 安全等级等同 API key：不进聊天记录、不进截图。
 
-## 兜底：VPS 中继（frp）
+## 再兜底：VPS 中继（frp）——已移出一期，留档备查
+
+ADR-0007 二次改道后 VPS 中继移出一期（兜底职责由 IPv6 直连承担，不再为此购置 VPS）；以下配方留档，仅当 Tailscale 与 IPv6 直连双双不可用时参考。
 
 蜂窝 v6 缺失或直连不可用时，用一台国内 VPS 跑 [frp](https://github.com/fatedier/frp)：
 

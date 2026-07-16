@@ -9,7 +9,7 @@ cp .env.example .env   # 填入 ZAGENT_TOKEN（≥32 字符长随机串）
 docker compose up -d --build
 ```
 
-浏览器打开 `http://localhost:7433/?token=<ZAGENT_TOKEN>`。Hub 在容器内监听 0.0.0.0，宿主机端口映射仅绑定 `127.0.0.1`（公网接入走后续隧道，ADR-0003）。
+浏览器打开 `http://localhost:7433/?token=<ZAGENT_TOKEN>`。Hub 在容器内监听 0.0.0.0，宿主机端口映射仅绑定 `127.0.0.1`（远程接入见下方 Tailscale 节，ADR-0007）。
 
 ## 首次登录（一次性，凭证外置）
 
@@ -23,6 +23,29 @@ docker exec -it zagent-hub git config --global user.email "你的邮箱"
 ```
 
 登录态落在 named volumes（`claude-config` / `codex-config` / `gh-config` / `git-config`），安全等级等同 API key。之后 `docker compose down && docker compose up -d` 随便重建，登录态保持。镜像内 `CLAUDE_CONFIG_DIR=/root/.claude`，`~/.claude.json` 也一并收进凭证卷。
+
+## 远程接入：Tailscale（主路径，ADR-0007）
+
+宿主机与手机都装 Tailscale 并登录同一 tailnet（admin console 建议对常用设备关闭 key expiry，免得半年重登一次）。宿主机上：
+
+```bash
+tailscale serve --bg 7433    # 把 127.0.0.1:7433 反代为 tailnet 内 HTTPS，证书自动
+tailscale serve status       # 查看地址，形如 https://<机器名>.<tailnet>.ts.net
+```
+
+把该地址加进 Origin 白名单（`.env`）并重建容器——`POST /auth/session` 强制校验 Origin，漏了会报「token 未通过验证」：
+
+```bash
+ZAGENT_EXTRA_ORIGINS=https://<机器名>.<tailnet>.ts.net
+ZAGENT_PWA_URL=https://<机器名>.<tailnet>.ts.net   # 若配了通知，点开推送回到这里
+```
+
+手机开着 Tailscale，浏览器访问该地址即可（PWA 安装同源）。注意：
+
+- serve 配置持久化，宿主机重启自动恢复；`tailscale serve --https=443 off` 可清除。
+- 本机代理（Clash 类）会吞 `*.ts.net`：桌面浏览器验证时需绕过；手机端 Tailscale 与代理类 VPN 互斥，用时切换。
+- 手机蜂窝与家宽之间通常 WireGuard P2P 直连（实测 p50≈56ms），打洞失败自动退 DERP（跨境，慢但可用）。
+- Tailscale 控制面不可达导致失联时，兜底路径见 `docs/deploy-public.md`（IPv6 直连，`--profile public`）。
 
 ## 工作区
 
