@@ -47,13 +47,10 @@ export function TerminalView({
   });
   const [attached, setAttached] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
-  const [diagOpen, setDiagOpen] = useState(false);
   const [ctrl, setCtrl] = useState<CtrlState>("off");
   const ctrlRef = useRef<CtrlState>("off");
   const termRef = useRef<Terminal | null>(null);
-  const rendererRef = useRef<"webgl" | "dom">("dom");
   const sendInputRef = useRef<((data: string) => void) | null>(null);
-  const diagReadRef = useRef<(() => string) | null>(null);
 
   function updateCtrl(next: CtrlState): void {
     ctrlRef.current = next;
@@ -113,8 +110,8 @@ export function TerminalView({
     } catch {
       webgl = null;
     }
-    // 渲染路径记入 ref，诊断浮层显示（仍卡顿时先确认不是静默降级成 dom）
-    rendererRef.current = webgl !== null ? "webgl" : "dom";
+    // 确认渲染路径（远程调试面包屑）：正常应为 webgl，dom 表示该机静默降级
+    console.info(`[zagent] renderer: ${webgl !== null ? "webgl" : "dom"}`);
     fit.fit();
     termRef.current = term;
 
@@ -333,7 +330,6 @@ export function TerminalView({
     let lastMoveT = 0;
     let velocity = 0; // 像素/毫秒，正=手指上移（向内容更新方向）
     let inertiaRaf: number | null = null;
-    let lastScrollAction = "—"; // 诊断浮层显示：上次滑动实际走了哪条路径
 
     function cellHeightPx(): number {
       const screen = term.element?.querySelector(".xterm-screen") ?? null;
@@ -379,7 +375,6 @@ export function TerminalView({
       }
       if (term.buffer.active.type !== "alternate") {
         term.scrollLines(lines);
-        lastScrollAction = `scrollLines ${lines}`;
         return;
       }
       const capped = Math.max(-TUI_MAX_LINES_PER_STEP, Math.min(TUI_MAX_LINES_PER_STEP, lines));
@@ -390,22 +385,13 @@ export function TerminalView({
         const seq = wheelSeq(up, col, row);
         if (seq !== "") {
           sendInput(seq.repeat(n));
-          lastScrollAction = `wheel ${up ? "↑" : "↓"}×${n} @${col},${row} (${term.modes.mouseTrackingMode})`;
           return;
         }
       }
       const app = term.modes.applicationCursorKeysMode;
       const arrow = up ? (app ? "\x1bOA" : "\x1b[A") : app ? "\x1bOB" : "\x1b[B";
       sendInput(arrow.repeat(n));
-      lastScrollAction = `arrow ${up ? "↑" : "↓"}×${n}`;
     }
-
-    function readDiag(): string {
-      const buf = term.buffer.active.type;
-      const mt = term.modes.mouseTrackingMode;
-      return `renderer:${rendererRef.current} buffer:${buf} mouse:${mt}\nlast:${lastScrollAction}`;
-    }
-    diagReadRef.current = readDiag;
 
     function onTouchStart(event: TouchEvent): void {
       stopInertia();
@@ -560,39 +546,9 @@ export function TerminalView({
     }
   }
 
-  // 诊断浮层（#13）：长按状态条打开，轮询运行时状态（renderer / buffer / mouse / 上次滑动路径）。
-  // 手机无电脑也能读；claude 滑不动的根因（哪条分支、鼠标追踪模式）由此一眼定位。
-  const [diagText, setDiagText] = useState("");
-  useEffect(() => {
-    if (!diagOpen) {
-      return;
-    }
-    const tick = (): void => setDiagText(diagReadRef.current?.() ?? "无数据");
-    tick();
-    const id = window.setInterval(tick, 500);
-    return () => window.clearInterval(id);
-  }, [diagOpen]);
-
-  const longPressRef = useRef<number | null>(null);
-  function armLongPress(): void {
-    longPressRef.current = window.setTimeout(() => setDiagOpen(true), 550);
-  }
-  function cancelLongPress(): void {
-    if (longPressRef.current !== null) {
-      clearTimeout(longPressRef.current);
-      longPressRef.current = null;
-    }
-  }
-
   return (
     <div className="app">
-      <div
-        className="status-bar"
-        data-tone={statusLine.tone}
-        onPointerDown={armLongPress}
-        onPointerUp={cancelLongPress}
-        onPointerLeave={cancelLongPress}
-      >
+      <div className="status-bar" data-tone={statusLine.tone}>
         <button type="button" className="status-back" onClick={onBack} aria-label="返回会话列表">
           ‹ 列表
         </button>
@@ -600,14 +556,6 @@ export function TerminalView({
         {statusLine.text}
       </div>
       <div className="terminal-container" ref={containerRef} />
-      {diagOpen && (
-        <div className="diag" role="dialog" aria-label="终端诊断">
-          <pre className="diag-body">{diagText}</pre>
-          <button type="button" className="diag-close" onClick={() => setDiagOpen(false)}>
-            关闭
-          </button>
-        </div>
-      )}
       <KeyBar
         ctrl={ctrl}
         disabled={!attached}

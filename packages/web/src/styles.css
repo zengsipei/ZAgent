@@ -111,42 +111,6 @@ body {
   padding: var(--space-xs) 0 0 var(--space-sm);
 }
 
-/* 诊断浮层（#13）：长按状态条打开，读运行时渲染/缓冲/鼠标追踪状态 */
-.diag {
-  position: fixed;
-  left: var(--space-md);
-  right: var(--space-md);
-  bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-}
-
-.diag-body {
-  margin: 0;
-  font: 0.75rem/1.5 var(--font-mono);
-  color: var(--ink);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.diag-close {
-  align-self: flex-end;
-  min-height: 44px;
-  padding: 0 var(--space-lg);
-  background: var(--cap);
-  color: var(--ink);
-  border: none;
-  border-radius: 6px;
-  font: 500 0.8125rem var(--font-ui);
-}
-
-
 /* ---------------------------------------------------------------------------
  * 辅助键条 —— 移动端常驻，桌面（悬停 + 精确指针）隐藏
  * ------------------------------------------------------------------------- */
