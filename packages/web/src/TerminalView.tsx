@@ -330,10 +330,21 @@ export function TerminalView({
     let lastMoveT = 0;
     let velocity = 0; // 像素/毫秒，正=手指上移（向内容更新方向）
     let inertiaRaf: number | null = null;
+    // 手势几何缓存（#13 流畅度）：cellHeight / screen rect 一次手势内不变，
+    // 但每个 touchmove 都读 clientHeight / getBoundingClientRect 会强制同步 layout
+    // （144Hz 屏一秒上百次）。手势开始快照一次，move/惯性/坐标换算全用缓存值
+    let geomCellHeight = 0;
+    let geomRect: DOMRect | null = null;
 
-    function cellHeightPx(): number {
+    function refreshGeometry(): void {
       const screen = term.element?.querySelector(".xterm-screen") ?? null;
-      return screen !== null && term.rows > 0 ? screen.clientHeight / term.rows : 0;
+      if (screen === null || term.rows <= 0) {
+        geomCellHeight = 0;
+        geomRect = null;
+        return;
+      }
+      geomRect = screen.getBoundingClientRect();
+      geomCellHeight = geomRect.height / term.rows;
     }
 
     function stopInertia(): void {
@@ -343,17 +354,14 @@ export function TerminalView({
       }
     }
 
-    // 滑动落点换算成终端行列（1-based），用于鼠标事件坐标
+    // 滑动落点换算成终端行列（1-based），用于鼠标事件坐标（用手势缓存的 rect，不再强制 layout）
     function cellAt(clientX: number, clientY: number): { col: number; row: number } {
-      const screen = term.element?.querySelector(".xterm-screen") ?? null;
-      const rect = screen?.getBoundingClientRect();
-      const ch = cellHeightPx();
-      if (rect === undefined || ch <= 0 || term.cols <= 0) {
+      if (geomRect === null || geomCellHeight <= 0 || term.cols <= 0) {
         return { col: 1, row: 1 };
       }
-      const cw = rect.width / term.cols;
-      const col = Math.min(term.cols, Math.max(1, Math.floor((clientX - rect.left) / cw) + 1));
-      const row = Math.min(term.rows, Math.max(1, Math.floor((clientY - rect.top) / ch) + 1));
+      const cw = geomRect.width / term.cols;
+      const col = Math.min(term.cols, Math.max(1, Math.floor((clientX - geomRect.left) / cw) + 1));
+      const row = Math.min(term.rows, Math.max(1, Math.floor((clientY - geomRect.top) / geomCellHeight) + 1));
       return { col, row };
     }
 
@@ -400,6 +408,7 @@ export function TerminalView({
       touchCarry = 0;
       touchScrolling = false;
       velocity = 0;
+      refreshGeometry(); // 手势内几何快照，move/惯性不再逐事件强制 layout
       if (touchY !== null) {
         lastMoveY = touchY;
         lastMoveT = event.timeStamp;
@@ -419,7 +428,7 @@ export function TerminalView({
         touchScrolling = true;
       }
       event.preventDefault();
-      const cellHeight = cellHeightPx();
+      const cellHeight = geomCellHeight;
       if (cellHeight <= 0) {
         return;
       }
@@ -445,7 +454,7 @@ export function TerminalView({
       if (event.cancelable) {
         event.preventDefault();
       }
-      const cellHeight = cellHeightPx();
+      const cellHeight = geomCellHeight;
       if (!wasScrolling || cellHeight <= 0 || Math.abs(velocity) < 0.05) {
         return;
       }
