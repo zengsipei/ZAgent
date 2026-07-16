@@ -47,10 +47,13 @@ export function TerminalView({
   });
   const [attached, setAttached] = useState(false);
   const [kbOpen, setKbOpen] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [ctrl, setCtrl] = useState<CtrlState>("off");
   const ctrlRef = useRef<CtrlState>("off");
   const termRef = useRef<Terminal | null>(null);
+  const rendererRef = useRef<"webgl" | "dom">("dom");
   const sendInputRef = useRef<((data: string) => void) | null>(null);
+  const diagReadRef = useRef<(() => string) | null>(null);
 
   function updateCtrl(next: CtrlState): void {
     ctrlRef.current = next;
@@ -110,8 +113,8 @@ export function TerminalView({
     } catch {
       webgl = null;
     }
-    // 远程调试时确认渲染路径（仍卡顿先看这里是不是降级成 dom 了）
-    console.info(`[zagent] renderer: ${webgl !== null ? "webgl" : "dom"}`);
+    // 渲染路径记入 ref，诊断浮层显示（仍卡顿时先确认不是静默降级成 dom）
+    rendererRef.current = webgl !== null ? "webgl" : "dom";
     fit.fit();
     termRef.current = term;
 
@@ -316,19 +319,21 @@ export function TerminalView({
 
     // 触摸滚动桥接（#11/#13）：xterm.js 不处理触摸手势。
     // 普通缓冲：竖向滑动映射为 scrollLines（内容跟手，未整行的位移累积到下一次）；
-    // 全屏 TUI（alternate screen、未开鼠标追踪）：映射为 ↑/↓ 方向键——与 xterm 桌面
-    // 滚轮在 alternate 下的行为一致，claude / less 等应用自身的滚动语义得以工作；
-    // 开了鼠标追踪的 TUI 只吞手势不代打。松手按末速度惯性续滚，触摸随时打断。
+    // 全屏 TUI（alternate screen）：claude 等 Ink 应用监听的是「鼠标滚轮」，故映射为
+    // 滚轮转义序列（开鼠标追踪→按其模式发 SGR/normal 滚轮事件；未开→退回 ↑/↓ 方向键，
+    // 覆盖 less/man 一类）。松手按末速度惯性续滚，触摸随时打断。
     // 触摸序列一律 preventDefault 掉合成 click：触摸永不聚焦、永不弹键盘（#13）。
     const TOUCH_SLOP_PX = 8;
-    const TUI_MAX_LINES_PER_STEP = 3;
+    const TUI_MAX_LINES_PER_STEP = 4;
     let touchY: number | null = null;
+    let touchX = 0;
     let touchCarry = 0;
     let touchScrolling = false;
     let lastMoveY = 0;
     let lastMoveT = 0;
     let velocity = 0; // 像素/毫秒，正=手指上移（向内容更新方向）
     let inertiaRaf: number | null = null;
+    let lastScrollAction = "—"; // 诊断浮层显示：上次滑动实际走了哪条路径
 
     function cellHeightPx(): number {
       const screen = term.element?.querySelector(".xterm-screen") ?? null;
@@ -342,27 +347,70 @@ export function TerminalView({
       }
     }
 
-    // 把「滚 N 行」翻译到当前缓冲：普通缓冲滚视口；TUI 发方向键（应用自己滚，行数截幅防灌键）
+    // 滑动落点换算成终端行列（1-based），用于鼠标事件坐标
+    function cellAt(clientX: number, clientY: number): { col: number; row: number } {
+      const screen = term.element?.querySelector(".xterm-screen") ?? null;
+      const rect = screen?.getBoundingClientRect();
+      const ch = cellHeightPx();
+      if (rect === undefined || ch <= 0 || term.cols <= 0) {
+        return { col: 1, row: 1 };
+      }
+      const cw = rect.width / term.cols;
+      const col = Math.min(term.cols, Math.max(1, Math.floor((clientX - rect.left) / cw) + 1));
+      const row = Math.min(term.rows, Math.max(1, Math.floor((clientY - rect.top) / ch) + 1));
+      return { col, row };
+    }
+
+    // 一次滚轮事件的转义序列：SGR（1006）优先，否则 normal（X10）编码。button 64=上/65=下
+    function wheelSeq(up: boolean, col: number, row: number): string {
+      const btn = up ? 64 : 65;
+      if (term.modes.mouseTrackingMode === "none") {
+        return "";
+      }
+      // xterm 未单独暴露 SGR 标志，但 claude/Ink 默认开 1006；SGR 对坐标无 223 上限更稳妥
+      const sgr = `\x1b[<${btn};${col};${row}M`;
+      return sgr;
+    }
+
+    // 把「滚 N 行」翻译到当前缓冲：普通缓冲滚视口；TUI 发滚轮（或退方向键），行数截幅防灌
     function applyLines(lines: number): void {
       if (lines === 0) {
         return;
       }
       if (term.buffer.active.type !== "alternate") {
         term.scrollLines(lines);
-        return;
-      }
-      if (term.modes.mouseTrackingMode !== "none") {
+        lastScrollAction = `scrollLines ${lines}`;
         return;
       }
       const capped = Math.max(-TUI_MAX_LINES_PER_STEP, Math.min(TUI_MAX_LINES_PER_STEP, lines));
+      const up = capped < 0; // 内容向上回看 = 滚轮上
+      const n = Math.abs(capped);
+      if (term.modes.mouseTrackingMode !== "none") {
+        const { col, row } = cellAt(touchX, touchY ?? 0);
+        const seq = wheelSeq(up, col, row);
+        if (seq !== "") {
+          sendInput(seq.repeat(n));
+          lastScrollAction = `wheel ${up ? "↑" : "↓"}×${n} @${col},${row} (${term.modes.mouseTrackingMode})`;
+          return;
+        }
+      }
       const app = term.modes.applicationCursorKeysMode;
-      const seq = capped > 0 ? (app ? "\x1bOB" : "\x1b[B") : app ? "\x1bOA" : "\x1b[A";
-      sendInput(seq.repeat(Math.abs(capped)));
+      const arrow = up ? (app ? "\x1bOA" : "\x1b[A") : app ? "\x1bOB" : "\x1b[B";
+      sendInput(arrow.repeat(n));
+      lastScrollAction = `arrow ${up ? "↑" : "↓"}×${n}`;
     }
+
+    function readDiag(): string {
+      const buf = term.buffer.active.type;
+      const mt = term.modes.mouseTrackingMode;
+      return `renderer:${rendererRef.current} buffer:${buf} mouse:${mt}\nlast:${lastScrollAction}`;
+    }
+    diagReadRef.current = readDiag;
 
     function onTouchStart(event: TouchEvent): void {
       stopInertia();
       touchY = event.touches.length === 1 ? event.touches[0]!.clientY : null;
+      touchX = event.touches.length === 1 ? event.touches[0]!.clientX : 0;
       touchCarry = 0;
       touchScrolling = false;
       velocity = 0;
@@ -377,6 +425,7 @@ export function TerminalView({
         return;
       }
       const y = event.touches[0]!.clientY;
+      touchX = event.touches[0]!.clientX;
       if (!touchScrolling) {
         if (Math.abs(y - touchY) < TOUCH_SLOP_PX) {
           return;
@@ -511,9 +560,39 @@ export function TerminalView({
     }
   }
 
+  // 诊断浮层（#13）：长按状态条打开，轮询运行时状态（renderer / buffer / mouse / 上次滑动路径）。
+  // 手机无电脑也能读；claude 滑不动的根因（哪条分支、鼠标追踪模式）由此一眼定位。
+  const [diagText, setDiagText] = useState("");
+  useEffect(() => {
+    if (!diagOpen) {
+      return;
+    }
+    const tick = (): void => setDiagText(diagReadRef.current?.() ?? "无数据");
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => window.clearInterval(id);
+  }, [diagOpen]);
+
+  const longPressRef = useRef<number | null>(null);
+  function armLongPress(): void {
+    longPressRef.current = window.setTimeout(() => setDiagOpen(true), 550);
+  }
+  function cancelLongPress(): void {
+    if (longPressRef.current !== null) {
+      clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+  }
+
   return (
     <div className="app">
-      <div className="status-bar" data-tone={statusLine.tone}>
+      <div
+        className="status-bar"
+        data-tone={statusLine.tone}
+        onPointerDown={armLongPress}
+        onPointerUp={cancelLongPress}
+        onPointerLeave={cancelLongPress}
+      >
         <button type="button" className="status-back" onClick={onBack} aria-label="返回会话列表">
           ‹ 列表
         </button>
@@ -521,6 +600,14 @@ export function TerminalView({
         {statusLine.text}
       </div>
       <div className="terminal-container" ref={containerRef} />
+      {diagOpen && (
+        <div className="diag" role="dialog" aria-label="终端诊断">
+          <pre className="diag-body">{diagText}</pre>
+          <button type="button" className="diag-close" onClick={() => setDiagOpen(false)}>
+            关闭
+          </button>
+        </div>
+      )}
       <KeyBar
         ctrl={ctrl}
         disabled={!attached}
