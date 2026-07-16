@@ -31,6 +31,17 @@ const TERMINAL_THEME = {
 
 type StatusTone = "info" | "ok" | "error";
 
+// standalone（PWA 窗口）下的 VirtualKeyboard API（#7 真机返工）：
+// 旧版 Android Chrome 的 standalone 窗口键盘为覆盖式——visualViewport 高度不变，
+// 「键条顶起」与「返回键收起检测」双双失灵。VK API 是该形态下唯一确定信号：
+// overlaysContent 接管布局后 geometrychange 给出键盘精确矩形（高度 0 = 收起）。
+// 浏览器标签页不启用，原 visualViewport 路径已验证可用。
+function standaloneVirtualKeyboard(): VirtualKeyboard | undefined {
+  return window.matchMedia("(display-mode: standalone)").matches
+    ? navigator.virtualKeyboard
+    : undefined;
+}
+
 export function TerminalView({
   token,
   sessionId,
@@ -51,14 +62,39 @@ export function TerminalView({
   const ctrlRef = useRef<CtrlState>("off");
   const termRef = useRef<Terminal | null>(null);
   const sendInputRef = useRef<((data: string) => void) | null>(null);
+  // 键盘盲态（standalone 且无 VK API 的老 Chrome）：键盘应在但视口不可观测，
+  // 收起检测必然失灵——滚动手势开始时以 blur 保底收掉（见 onTouchMove / armKeyboardBlindProbe）
+  const kbBlindRef = useRef(false);
 
   function updateCtrl(next: CtrlState): void {
     ctrlRef.current = next;
     setCtrl(next);
   }
 
-  // 系统键盘弹起时 visualViewport 变矮：让 .app 跟着收缩，键条始终贴在键盘上方
+  // 系统键盘弹起时应用整体收缩，键条始终贴在键盘上方。
+  // standalone 走 VirtualKeyboard（覆盖式键盘，visualViewport 不动）；浏览器走 visualViewport
   useEffect(() => {
+    const vk = standaloneVirtualKeyboard();
+    if (vk !== undefined) {
+      vk.overlaysContent = true;
+      const onGeometry = (): void => {
+        const kbHeight = vk.boundingRect.height;
+        if (kbHeight > 0) {
+          document.documentElement.style.setProperty(
+            "--app-height",
+            `${window.innerHeight - kbHeight}px`,
+          );
+        } else {
+          document.documentElement.style.removeProperty("--app-height");
+        }
+      };
+      vk.addEventListener("geometrychange", onGeometry);
+      return () => {
+        vk.removeEventListener("geometrychange", onGeometry);
+        vk.overlaysContent = false;
+        document.documentElement.style.removeProperty("--app-height");
+      };
+    }
     const viewport = window.visualViewport;
     if (viewport === null) {
       return;
@@ -125,6 +161,7 @@ export function TerminalView({
       textarea.inputMode = "none";
     }
     function lockKeyboard(): void {
+      kbBlindRef.current = false;
       setKbOpen(false);
       if (coarsePointer && textarea !== undefined) {
         textarea.inputMode = "none";
@@ -148,6 +185,14 @@ export function TerminalView({
       }
     };
     vv?.addEventListener("resize", onVvResize);
+    // standalone：覆盖式键盘下上面的 vv 判定永不触发，收起检测改听 VK 几何（高度归零=收起）
+    const standaloneVk = standaloneVirtualKeyboard();
+    const onVkGeometry = (): void => {
+      if (standaloneVk !== undefined && standaloneVk.boundingRect.height === 0) {
+        lockKeyboard();
+      }
+    };
+    standaloneVk?.addEventListener("geometrychange", onVkGeometry);
 
     // 断线自动重连（ADR-0005：连接只是观察者，断开重连即恢复）。
     // disposed = 组件卸载；sessionExited = 会话已退出，二者都不再重连。
@@ -426,6 +471,12 @@ export function TerminalView({
           return;
         }
         touchScrolling = true;
+        // 盲态保底：键盘可见性不可观测时，滚动一开始就 blur 收掉——
+        // 宁可让用户重呼一次，不让滞留的聚焦+text 态在手势里反复唤起 IME
+        if (kbBlindRef.current) {
+          kbBlindRef.current = false;
+          textarea?.blur();
+        }
       }
       event.preventDefault();
       const cellHeight = geomCellHeight;
@@ -501,6 +552,7 @@ export function TerminalView({
       container.removeEventListener("touchcancel", onTouchEnd);
       textarea?.removeEventListener("blur", onTaBlur);
       vv?.removeEventListener("resize", onVvResize);
+      standaloneVk?.removeEventListener("geometrychange", onVkGeometry);
       dataListener.dispose();
       ws?.close();
       term.dispose();
@@ -531,6 +583,22 @@ export function TerminalView({
   // ⌨ 键（#13）：移动端键盘唯一入口。textarea 常态 inputMode=none（被聚焦也不唤键盘），
   // 呼出时切 text 并（重）聚焦——必须在用户手势事件内同步调用；收起时先拨回 none 再 blur，
   // 双保险：Android 返回键收过键盘后焦点还在，单靠 blur 状态会漂
+  // 盲态探测：⌨ 呼出后 900ms 视口毫无收缩且无 VK 信号，判定「键盘可见性不可观测」
+  //（standalone 无 VK API 的老 Chrome）——此后滚动手势以 blur 保底（onTouchMove）
+  function armKeyboardBlindProbe(ta: HTMLTextAreaElement): void {
+    kbBlindRef.current = false;
+    if (standaloneVirtualKeyboard() !== undefined) {
+      return; // VK 几何是确定信号，无需盲探
+    }
+    const base = window.visualViewport?.height ?? window.innerHeight;
+    window.setTimeout(() => {
+      const now = window.visualViewport?.height ?? window.innerHeight;
+      if (document.activeElement === ta && ta.inputMode === "text" && base - now < 80) {
+        kbBlindRef.current = true;
+      }
+    }, 900);
+  }
+
   function handleKeyboardTap(): void {
     const term = termRef.current;
     if (term === null) {
@@ -541,6 +609,7 @@ export function TerminalView({
       return;
     }
     if (kbOpen) {
+      kbBlindRef.current = false;
       ta.inputMode = "none";
       term.blur();
       setKbOpen(false);
@@ -552,6 +621,7 @@ export function TerminalView({
       }
       term.focus();
       setKbOpen(true);
+      armKeyboardBlindProbe(ta);
     }
   }
 
