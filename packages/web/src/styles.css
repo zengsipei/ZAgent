@@ -197,7 +197,7 @@ body {
   font-size: 0.9375rem;
 }
 
-/* Ctrl 粘滞态是全界面唯一的 teal 时刻：强调色只用于状态 */
+/* 强调色只用于状态时刻：Ctrl 粘滞、键盘弹出 */
 .key-cap--ctrl[data-state="once"] {
   background: var(--accent-dim);
   color: var(--accent);
@@ -207,6 +207,17 @@ body {
 .key-cap--ctrl[data-state="lock"] {
   background: var(--accent);
   color: var(--accent-ink);
+}
+
+/* ⌨ 键点亮 = 系统键盘弹出（移动端键盘唯一入口，#13） */
+.key-cap--kb {
+  font-size: 1.125rem;
+}
+
+.key-cap--kb[data-state="on"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* 横滑两端渐隐：还有键在画面外时提示 */

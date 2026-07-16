@@ -170,11 +170,15 @@ const CTRL_ARIA: Record<CtrlState, string> = {
 export interface KeyBarProps {
   ctrl: CtrlState;
   disabled: boolean;
+  /** 系统键盘是否弹出（xterm textarea 聚焦态）：⌨ 键点亮依据。 */
+  keyboard: boolean;
   onCtrlTap: () => void;
   onKey: (id: KeyId) => void;
+  /** ⌨ 键：呼出/收起系统键盘（移动端键盘唯一入口，#13）。 */
+  onKeyboardTap: () => void;
 }
 
-export function KeyBar({ ctrl, disabled, onCtrlTap, onKey }: KeyBarProps) {
+export function KeyBar({ ctrl, disabled, keyboard, onCtrlTap, onKey, onKeyboardTap }: KeyBarProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
 
@@ -205,6 +209,24 @@ export function KeyBar({ ctrl, disabled, onCtrlTap, onKey }: KeyBarProps) {
     <div ref={barRef} className="key-bar" role="toolbar" aria-label="终端辅助键">
       <div ref={rowRef} className="key-bar-row">
         <div className="key-group">
+          {/* ⌨ 与其他键帽相反：不做 pointerdown preventDefault——它就是要转移焦点，
+              且 iOS 只在 click 这类激活事件内允许程序化弹出键盘 */}
+          <button
+            type="button"
+            tabIndex={-1}
+            className="key-cap key-cap--kb"
+            data-state={keyboard ? "on" : "off"}
+            aria-label={keyboard ? "收起系统键盘" : "呼出系统键盘"}
+            aria-pressed={keyboard}
+            disabled={disabled}
+            onClick={() => {
+              vibrate();
+              onKeyboardTap();
+            }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            ⌨︎
+          </button>
           {MOD_KEYS.map((key) => (
             <KeyCap
               key={key.id}
