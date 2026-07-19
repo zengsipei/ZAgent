@@ -62,7 +62,7 @@ export function TerminalView({
   const ctrlRef = useRef<CtrlState>("off");
   const termRef = useRef<Terminal | null>(null);
   const sendInputRef = useRef<((data: string) => void) | null>(null);
-  // 键盘盲态（standalone 且无 VK API 的老 Chrome）：键盘应在但视口不可观测，
+  // 键盘盲态（呼出后视口与 VK 几何均无信号的环境，如快捷方式窗口 + 第三方输入法）：
   // 收起检测必然失灵——滚动手势开始时以 blur 保底收掉（见 onTouchMove / armKeyboardBlindProbe）
   const kbBlindRef = useRef(false);
 
@@ -585,17 +585,21 @@ export function TerminalView({
   // ⌨ 键（#13）：移动端键盘唯一入口。textarea 常态 inputMode=none（被聚焦也不唤键盘），
   // 呼出时切 text 并（重）聚焦——必须在用户手势事件内同步调用；收起时先拨回 none 再 blur，
   // 双保险：Android 返回键收过键盘后焦点还在，单靠 blur 状态会漂
-  // 盲态探测：⌨ 呼出后 900ms 视口毫无收缩且无 VK 信号，判定「键盘可见性不可观测」
-  //（standalone 无 VK API 的老 Chrome）——此后滚动手势以 blur 保底（onTouchMove）
+  // 盲态探测：⌨ 呼出后 900ms 若「vv 没缩且 VK 几何仍为 0」，判定「键盘可见性不可观测」，
+  // 此后滚动手势以 blur 保底（onTouchMove）。判定看实际信号而非 API 存在性——
+  // 三轮真机教训：快捷方式窗口 + 第三方输入法下 VK 接管成功（ovl=true）但几何恒 0
   function armKeyboardBlindProbe(ta: HTMLTextAreaElement): void {
     kbBlindRef.current = false;
-    if (virtualKeyboardApi() !== undefined) {
-      return; // VK 几何是确定信号，无需盲探
-    }
     const base = window.visualViewport?.height ?? window.innerHeight;
     window.setTimeout(() => {
       const now = window.visualViewport?.height ?? window.innerHeight;
-      if (document.activeElement === ta && ta.inputMode === "text" && base - now < 80) {
+      const vkHeight = virtualKeyboardApi()?.boundingRect.height ?? 0;
+      if (
+        document.activeElement === ta &&
+        ta.inputMode === "text" &&
+        base - now < 80 &&
+        vkHeight === 0
+      ) {
         kbBlindRef.current = true;
       }
     }, 900);
