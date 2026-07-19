@@ -31,13 +31,9 @@ const TERMINAL_THEME = {
 
 type StatusTone = "info" | "ok" | "error";
 
-// VirtualKeyboard API（Chrome 94+，#7 真机返工二轮）：存在即启用，不按 display-mode 门控。
-// 教训：无 GMS/WebAPK 铸造不可达的环境（国内常态）里「安装」产物是快捷方式窗口，
-// display-mode 上报 browser 但键盘行为是覆盖式——visualViewport 不缩，「键条顶起」与
-// 「返回键收起检测」双双失灵。按形态门控会漏掉它；统一 VK 接管让三种形态
-//（真 standalone / 快捷方式窗口 / 浏览器标签）走同一条确定信号：overlaysContent 后
-// geometrychange 给出键盘精确矩形（高度 0 = 收起）。桌面 Chrome 有 API 无软键盘，
-// 高度恒 0 无副作用；iOS 无此 API，走 visualViewport 路径。
+// VirtualKeyboard API（Chrome 94+，非标准，lib.dom 未收录）：仅作盲态探测的信号源之一。
+// overlaysContent 接管路线在 #7 三/四轮试过并撤回——快捷方式窗口（无 GMS 下「安装」的
+// 实际形态，display-mode 报 browser）+ 第三方输入法里接管成功但几何恒 0，拿不到键盘高度
 function virtualKeyboardApi(): VirtualKeyboard | undefined {
   return navigator.virtualKeyboard;
 }
@@ -65,36 +61,21 @@ export function TerminalView({
   // 键盘盲态（呼出后视口与 VK 几何均无信号的环境，如快捷方式窗口 + 第三方输入法）：
   // 收起检测必然失灵——滚动手势开始时以 blur 保底收掉（见 onTouchMove / armKeyboardBlindProbe）
   const kbBlindRef = useRef(false);
+  // 该环境是否判过盲（跨呼出记忆）：盲环境的顶起走估算，后续呼出立即应用不等探测
+  const kbBlindEnvRef = useRef(false);
+  // 估算顶起是否生效中：收起时要撤（visualViewport 路径的 --app-height 由 effect 自管）
+  const kbEstimateAppliedRef = useRef(false);
 
   function updateCtrl(next: CtrlState): void {
     ctrlRef.current = next;
     setCtrl(next);
   }
 
-  // 系统键盘弹起时应用整体收缩，键条始终贴在键盘上方。
-  // 有 VK API（Android Chrome 全形态）走 VK 接管；无 VK（iOS）走 visualViewport
+  // 系统键盘弹起时应用整体收缩，键条始终贴在键盘上方：跟随 visualViewport。
+  // VK overlaysContent 接管在三/四轮尝试过，真机证伪后撤回：快捷方式窗口 + 第三方
+  // 输入法下接管成功（ovl=true）但几何恒 0，拿不到任何键盘高度，反而要冒覆盖
+  // 浏览器本来正常的 resize 行为的风险。零信号环境的顶起走盲态估算（armKeyboardBlindProbe）
   useEffect(() => {
-    const vk = virtualKeyboardApi();
-    if (vk !== undefined) {
-      vk.overlaysContent = true;
-      const onGeometry = (): void => {
-        const kbHeight = vk.boundingRect.height;
-        if (kbHeight > 0) {
-          document.documentElement.style.setProperty(
-            "--app-height",
-            `${window.innerHeight - kbHeight}px`,
-          );
-        } else {
-          document.documentElement.style.removeProperty("--app-height");
-        }
-      };
-      vk.addEventListener("geometrychange", onGeometry);
-      return () => {
-        vk.removeEventListener("geometrychange", onGeometry);
-        vk.overlaysContent = false;
-        document.documentElement.style.removeProperty("--app-height");
-      };
-    }
     const viewport = window.visualViewport;
     if (viewport === null) {
       return;
@@ -164,6 +145,7 @@ export function TerminalView({
     }
     function lockKeyboard(): void {
       kbBlindRef.current = false;
+      clearEstimatedInset();
       setKbOpen(false);
       if (coarsePointer && textarea !== undefined) {
         textarea.inputMode = "none";
@@ -187,14 +169,6 @@ export function TerminalView({
       }
     };
     vv?.addEventListener("resize", onVvResize);
-    // VK 可用时收起检测听 VK 几何（高度归零=收起）——覆盖式键盘下上面的 vv 判定永不触发
-    const vkApi = virtualKeyboardApi();
-    const onVkGeometry = (): void => {
-      if (vkApi !== undefined && vkApi.boundingRect.height === 0) {
-        lockKeyboard();
-      }
-    };
-    vkApi?.addEventListener("geometrychange", onVkGeometry);
 
     // 断线自动重连（ADR-0005：连接只是观察者，断开重连即恢复）。
     // disposed = 组件卸载；sessionExited = 会话已退出，二者都不再重连。
@@ -554,7 +528,6 @@ export function TerminalView({
       container.removeEventListener("touchcancel", onTouchEnd);
       textarea?.removeEventListener("blur", onTaBlur);
       vv?.removeEventListener("resize", onVvResize);
-      vkApi?.removeEventListener("geometrychange", onVkGeometry);
       dataListener.dispose();
       ws?.close();
       term.dispose();
@@ -585,22 +558,42 @@ export function TerminalView({
   // ⌨ 键（#13）：移动端键盘唯一入口。textarea 常态 inputMode=none（被聚焦也不唤键盘），
   // 呼出时切 text 并（重）聚焦——必须在用户手势事件内同步调用；收起时先拨回 none 再 blur，
   // 双保险：Android 返回键收过键盘后焦点还在，单靠 blur 状态会漂
-  // 盲态探测：⌨ 呼出后 900ms 若「vv 没缩且 VK 几何仍为 0」，判定「键盘可见性不可观测」，
-  // 此后滚动手势以 blur 保底（onTouchMove）。判定看实际信号而非 API 存在性——
-  // 三轮真机教训：快捷方式窗口 + 第三方输入法下 VK 接管成功（ovl=true）但几何恒 0
+  // 盲态估算顶起（零信号环境唯一的招）：键盘高度无从得知，按中文输入法带候选栏的
+  // 典型占屏比把应用收到上半 50%——宁高勿低，键条上方留缝好过被键盘盖住
+  function applyEstimatedInset(): void {
+    kbEstimateAppliedRef.current = true;
+    document.documentElement.style.setProperty(
+      "--app-height",
+      `${Math.round(window.innerHeight * 0.5)}px`,
+    );
+  }
+
+  function clearEstimatedInset(): void {
+    if (kbEstimateAppliedRef.current) {
+      kbEstimateAppliedRef.current = false;
+      document.documentElement.style.removeProperty("--app-height");
+    }
+  }
+
+  // 盲态探测：⌨ 呼出后 900ms 若「vv 没缩且 VK 几何仍为 0」（快捷方式窗口 + 第三方输入法
+  // 的零信号环境，四轮真机实锤），判盲——①滚动手势以 blur 保底收键盘（onTouchMove）；
+  // ②顶起走估算并记住该环境，后续呼出立即应用不等探测。信号恢复（如换输入法）自动摘帽
   function armKeyboardBlindProbe(ta: HTMLTextAreaElement): void {
     kbBlindRef.current = false;
     const base = window.visualViewport?.height ?? window.innerHeight;
     window.setTimeout(() => {
+      if (document.activeElement !== ta || ta.inputMode !== "text") {
+        return; // 键盘已被收起，无从判定
+      }
       const now = window.visualViewport?.height ?? window.innerHeight;
       const vkHeight = virtualKeyboardApi()?.boundingRect.height ?? 0;
-      if (
-        document.activeElement === ta &&
-        ta.inputMode === "text" &&
-        base - now < 80 &&
-        vkHeight === 0
-      ) {
+      if (base - now < 80 && vkHeight === 0) {
         kbBlindRef.current = true;
+        kbBlindEnvRef.current = true;
+        applyEstimatedInset();
+      } else {
+        kbBlindEnvRef.current = false;
+        clearEstimatedInset();
       }
     }, 900);
   }
@@ -616,6 +609,7 @@ export function TerminalView({
     }
     if (kbOpen) {
       kbBlindRef.current = false;
+      clearEstimatedInset();
       ta.inputMode = "none";
       term.blur();
       setKbOpen(false);
@@ -627,6 +621,9 @@ export function TerminalView({
       }
       term.focus();
       setKbOpen(true);
+      if (kbBlindEnvRef.current) {
+        applyEstimatedInset();
+      }
       armKeyboardBlindProbe(ta);
     }
   }
