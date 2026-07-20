@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { SessionType } from "@zagent/protocol";
 
-import { ChatDebugView } from "./ChatDebugView.js";
+import { ChatView } from "./ChatView.js";
 import { SessionListView } from "./SessionListView.js";
 import { TerminalView } from "./TerminalView.js";
 
@@ -168,7 +168,7 @@ export function App() {
     setActiveSession(null);
   };
   if (activeSession.kind === "chat") {
-    return <ChatDebugView token={token} sessionId={activeSession.id} onBack={handleBack} />;
+    return <ChatView token={token} sessionId={activeSession.id} onBack={handleBack} />;
   }
   return <TerminalView token={token} sessionId={activeSession.id} onBack={handleBack} />;
 }

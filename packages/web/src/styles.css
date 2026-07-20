@@ -580,99 +580,398 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * chat 验收日志视图（#17 临时 UI）——M2（#18）落地正经聊天气泡时整体替换
+ * 聊天视图（#18）—— chat 会话的气泡时间线。
+ * 键盘适配零 JS：viewport meta 的 interactive-widget=resizes-content 让键盘弹出时
+ * 布局视口收缩，flex 布局自然把输入条推到键盘上方；100dvh 与 --app-height 绝缘
+ *（那是终端页键盘检测的变量，聊天页禁用一切检测）。
  * ------------------------------------------------------------------------- */
 
-.chat-debug {
+.chat {
   display: flex;
   flex-direction: column;
-  height: var(--app-height, 100dvh);
+  height: 100dvh;
 }
 
-.chat-debug-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: 6px var(--space-md);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.chat-debug-header button {
-  border: none;
-  border-radius: 6px;
-  padding: 4px var(--space-sm);
-  background: var(--cap);
-  color: var(--ink);
-  font: 500 0.8125rem var(--font-ui);
-}
-
-.chat-debug-title {
-  font: 500 0.8125rem var(--font-mono);
-  color: var(--muted);
-}
-
-.chat-debug-header .session-list-status {
+.chat-state-badge {
   margin-left: auto;
+  color: var(--accent);
+  font-size: 0.75rem;
 }
 
-.chat-debug-log {
+.chat-log-wrap {
+  position: relative;
   flex: 1;
+  min-height: 0;
+}
+
+.chat-log {
+  height: 100%;
   overflow-y: auto;
-  padding: var(--space-md);
-  font: 0.8125rem/1.5 var(--font-mono);
   overscroll-behavior: contain;
 }
 
-.chat-debug-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 2px 0;
+.chat-log-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-md) var(--space-md) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.chat-empty {
+  margin: 24vh 0 0;
+  text-align: center;
+  font-size: 0.875rem;
   color: var(--muted);
 }
 
-.chat-debug-line[data-kind="user"] {
+/* 用户消息：右侧中性色气泡——teal 留给状态，谁在说话靠对齐与分层区分 */
+.chat-row--user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chat-bubble-user {
+  max-width: 85%;
+  padding: 8px 12px;
+  background: var(--cap);
+  border-radius: 10px;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* assistant：无气泡全宽 markdown——代码块不该被气泡挤压 */
+.chat-md {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.chat-md > * {
+  margin-block: 0.45em;
+}
+
+.chat-md > *:first-child {
+  margin-block-start: 0;
+}
+
+.chat-md > *:last-child {
+  margin-block-end: 0;
+}
+
+.chat-md h1,
+.chat-md h2,
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  font-weight: 600;
+  margin-block: 0.8em 0.4em;
+}
+
+.chat-md h1 {
+  font-size: 1.125rem;
+}
+
+.chat-md h2 {
+  font-size: 1.0625rem;
+}
+
+.chat-md h3,
+.chat-md h4,
+.chat-md h5,
+.chat-md h6 {
+  font-size: 1rem;
+}
+
+.chat-md a {
   color: var(--accent);
 }
 
-.chat-debug-line[data-kind="assistant"],
-.chat-debug-pending {
-  color: var(--ink);
+.chat-md code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--cap);
+  padding: 1px 5px;
+  border-radius: 4px;
 }
 
-.chat-debug-line[data-kind="system"] {
+.chat-md pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.chat-md pre code {
+  display: block;
+  background: none;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.chat-md ul,
+.chat-md ol {
+  padding-inline-start: 1.4em;
+}
+
+.chat-md li {
+  margin-block: 0.2em;
+}
+
+.chat-md blockquote {
+  margin: 0.5em 0;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.chat-md table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.chat-md th,
+.chat-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.chat-md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+/* system 条目只在异常时出现（回合失败 / 进程退出），要被看见但不抢戏 */
+.chat-system {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 工具卡：折叠态一行摘要，密集调用时时间线仍可扫读 */
+.chat-tool {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.chat-tool summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 44px;
+  padding: 0 var(--space-md);
+  cursor: pointer;
+  list-style: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chat-tool summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-tool summary::after {
+  content: "›";
+  flex: none;
+  color: var(--muted);
+  transition: rotate 150ms var(--ease-out);
+}
+
+.chat-tool[open] summary::after {
+  rotate: 90deg;
+}
+
+.chat-tool-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.chat-tool[data-state="running"] .chat-tool-dot {
+  background: var(--accent);
+  animation: chat-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.chat-tool[data-state="error"] .chat-tool-dot {
+  background: var(--danger);
+}
+
+.chat-tool-name {
+  flex: none;
+  font: 500 0.8125rem var(--font-ui);
+}
+
+.chat-tool-summary {
+  flex: 1;
+  min-width: 0;
+  font: 0.75rem var(--font-mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-tool-detail {
+  border-top: 1px solid var(--border);
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.chat-tool-io {
+  margin: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  font: 0.75rem/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+
+.chat-tool-io[data-error] {
   color: var(--danger);
 }
 
-.chat-debug-input {
+.chat-tool-pending {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* 生成中指示：三点错相脉冲——status 动效，不是装饰 */
+.chat-thinking {
   display: flex;
+  gap: 5px;
+  padding: var(--space-xs) 0;
+}
+
+.chat-thinking span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: chat-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.chat-thinking span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.chat-thinking span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes chat-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 上翻看历史时的「回到最新」：浮起临时层，允许低调环境影 */
+.chat-jump {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--cap);
+  color: var(--ink);
+  font-size: 1.125rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.35);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chat-jump:active {
+  background: var(--cap-press);
+}
+
+/* 输入条：普通 textarea 常驻底部；field-sizing 随内容长高（Chrome 123+，
+ * 不支持则固定单行——仍完全可用） */
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-md) max(var(--space-sm), env(safe-area-inset-bottom));
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
 
-.chat-debug-input input {
+.chat-composer textarea {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px var(--space-sm);
+  field-sizing: content;
+  min-height: 44px;
+  max-height: 35dvh;
+  box-sizing: border-box;
+  padding: 11px var(--space-md);
+  resize: none;
   background: var(--bg);
   color: var(--ink);
-  font: 0.875rem var(--font-ui);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 0.9375rem/1.4 var(--font-ui);
 }
 
-.chat-debug-input button {
+.chat-composer textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.chat-composer textarea:disabled {
+  opacity: 0.55;
+}
+
+.chat-composer button {
+  flex: none;
+  height: 44px;
+  padding: 0 var(--space-lg);
   border: none;
-  border-radius: 6px;
-  padding: 8px var(--space-md);
+  border-radius: 8px;
   background: var(--accent);
   color: var(--accent-ink);
   font: 600 0.875rem var(--font-ui);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.chat-debug-input button:disabled {
+.chat-composer button:disabled {
   background: var(--cap);
   color: var(--muted);
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-tool summary::after {
+    transition: none;
+  }
+
+  .chat-tool[data-state="running"] .chat-tool-dot,
+  .chat-thinking span {
+    animation: none;
+    opacity: 0.7;
+  }
 }
