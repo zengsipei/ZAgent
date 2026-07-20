@@ -215,7 +215,7 @@ describe("parseHubMessage：会话管理消息", () => {
     status: "running",
     createdAt: 1751900000000,
   };
-  const template = { id: "bash", name: "Bash", command: "bash", args: [] };
+  const template = { id: "bash", name: "Bash", command: "bash", args: [], kind: "pty" };
   const raw = (type: string, payload: unknown) =>
     serializeEnvelope({ channel: CONTROL_CHANNEL, type, payload });
 
@@ -264,5 +264,137 @@ describe("parseHubMessage：会话管理消息", () => {
       payload: { message: "no such template" },
     });
     expect(parseHubMessage(raw("error", {}))).toBeNull();
+  });
+});
+
+describe("chat 会话消息（#17）", () => {
+  const chatSession = {
+    id: "s2",
+    type: "chat",
+    template: "claude-chat",
+    command: "claude -p …",
+    cwd: "/home/me",
+    status: "running",
+    createdAt: 1751900000000,
+    claudeSessionId: "3f9c2a1e-0000-0000-0000-000000000000",
+  };
+
+  it("SessionInfo 接受 chat 类型与可选 claudeSessionId", () => {
+    const raw = serializeEnvelope({
+      channel: CONTROL_CHANNEL,
+      type: "sessions",
+      payload: { sessions: [chatSession] },
+    });
+    expect(parseHubMessage(raw)).not.toBeNull();
+    const noClaudeId = { ...chatSession, claudeSessionId: undefined };
+    expect(
+      parseHubMessage(
+        serializeEnvelope({
+          channel: CONTROL_CHANNEL,
+          type: "sessions",
+          payload: { sessions: [noClaudeId] },
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("attached 接受 chat 会话类型", () => {
+    const raw = serializeEnvelope({
+      channel: CONTROL_CHANNEL,
+      type: "attached",
+      payload: { sessionId: "s2", sessionType: "chat", cols: 80, rows: 24 },
+    });
+    expect(parseHubMessage(raw)?.type).toBe("attached");
+  });
+
+  it("chat-input：session 通道 text 字符串", () => {
+    const good = serializeEnvelope({
+      channel: sessionChannel("s2"),
+      type: "chat-input",
+      payload: { text: "你好" },
+    });
+    expect(parseClientMessage(good)?.type).toBe("chat-input");
+    expect(
+      parseClientMessage(
+        serializeEnvelope({ channel: CONTROL_CHANNEL, type: "chat-input", payload: { text: "x" } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        serializeEnvelope({ channel: sessionChannel("s2"), type: "chat-input", payload: {} }),
+      ),
+    ).toBeNull();
+  });
+
+  const items = [
+    { kind: "user", id: "m1", text: "你好", ts: 1 },
+    { kind: "assistant", id: "m2", text: "你好！", ts: 2 },
+    { kind: "tool_use", id: "m3", name: "Bash", input: '{"command":"ls"}', ts: 3 },
+    { kind: "tool_result", id: "m4", toolUseId: "m3", text: "a.txt", isError: false, ts: 4 },
+    { kind: "system", id: "m5", text: "已连接", ts: 5 },
+  ];
+
+  it("chat-item：接受全部条目形态", () => {
+    for (const item of items) {
+      const raw = serializeEnvelope({
+        channel: sessionChannel("s2"),
+        type: "chat-item",
+        payload: { item },
+      });
+      expect(parseHubMessage(raw)?.type).toBe("chat-item");
+    }
+  });
+
+  it("chat-item：拒绝坏条目", () => {
+    const bad = [
+      { kind: "user", id: "m1", ts: 1 }, // 缺 text
+      { kind: "tool_use", id: "m3", name: "Bash", input: 42, ts: 3 }, // input 非字符串
+      { kind: "tool_result", id: "m4", toolUseId: "m3", text: "x", ts: 4 }, // 缺 isError
+      { kind: "unknown", id: "m9", text: "x", ts: 9 },
+      { id: "m1", text: "x", ts: 1 }, // 缺 kind
+    ];
+    for (const item of bad) {
+      const raw = serializeEnvelope({
+        channel: sessionChannel("s2"),
+        type: "chat-item",
+        payload: { item },
+      });
+      expect(parseHubMessage(raw)).toBeNull();
+    }
+  });
+
+  it("chat-delta / chat-state：session 通道", () => {
+    expect(
+      parseHubMessage(
+        serializeEnvelope({ channel: sessionChannel("s2"), type: "chat-delta", payload: { text: "好" } }),
+      )?.type,
+    ).toBe("chat-delta");
+    for (const state of ["idle", "thinking", "awaiting-input"]) {
+      expect(
+        parseHubMessage(
+          serializeEnvelope({ channel: sessionChannel("s2"), type: "chat-state", payload: { state } }),
+        )?.type,
+      ).toBe("chat-state");
+    }
+    expect(
+      parseHubMessage(
+        serializeEnvelope({ channel: sessionChannel("s2"), type: "chat-state", payload: { state: "busy" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("chat-history：items + state，pending 可选", () => {
+    const base = { channel: sessionChannel("s2"), type: "chat-history" };
+    expect(
+      parseHubMessage(serializeEnvelope({ ...base, payload: { items, state: "idle" } })),
+    ).toEqual({ channel: "session:s2", type: "chat-history", payload: { items, state: "idle" } });
+    expect(
+      parseHubMessage(
+        serializeEnvelope({ ...base, payload: { items: [], state: "thinking", pending: "正在……" } }),
+      )?.payload,
+    ).toEqual({ items: [], state: "thinking", pending: "正在……" });
+    expect(
+      parseHubMessage(serializeEnvelope({ ...base, payload: { items: [{ kind: "user" }], state: "idle" } })),
+    ).toBeNull();
   });
 });

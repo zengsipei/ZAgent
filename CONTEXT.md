@@ -7,7 +7,7 @@
 ## 词汇表（规范术语）
 
 - **Hub** — 容器内常驻的会话宿主服务（Node/TS：`ws` + `node-pty`）。持有全部 PTY、提供 WS 接口、管理会话生命周期。别名「本地 agent」；为避免与 claude/codex 这类 AI agent 撞名，本项目文档一律用 Hub。
-- **会话（Session）** — Hub spawn 的一个被控 CLI 进程及其元数据 `{id, type, 命令模板, cwd, claudeSessionId?}`。一期 `type` 仅有 `pty`。Hub 只管理自己 spawn 的会话，不接管外部已有终端。
+- **会话（Session）** — Hub spawn 的一个被控 CLI 进程及其元数据 `{id, type, 命令模板, cwd, claudeSessionId?}`。`type` 有 `pty`（终端字节流）与 `chat`（结构化消息流，#17）。Hub 只管理自己 spawn 的会话，不接管外部已有终端。
 - **命令模板（Command Template）** — 新建会话时的预设命令（claude / codex / bash / 自定义参数）。PTY 模式天然命令无关，支持任意 CLI 是免费的。
 - **信封（Envelope）** — WS 上的统一消息格式 `{channel, type, payload}`，JSON 编码；PTY 字节流以 base64 作为 payload。协议类型定义前后端共享同一份 TS 源。
 - **通道（Channel）** — 信封的路由键。`control` = 会话管理（list / create / kill / attach / resize）；`session:<id>` = 具体会话的输入输出流。不另设 REST API。
@@ -18,7 +18,7 @@
 - **凭证卷（Credentials Mount）** — `~/.claude`、`~/.codex`、git/gh 凭证等登录态目录，挂载到容器外持久化（WSL bind 或 named volume 由部署配置决定）。安全等级等同 API key。Docker 服务器形态的概念；Win 直跑形态直接用本机登录态。
 - **应用层完整认证（App-layer Auth）** — Hub 内写死、不可配置关闭：长随机根 token + Origin 白名单 + 会话 token 签发（`/auth/session` 换发 30 天期 HMAC token，前端只持久化它）+ 认证失败按 IP 限速。主路径 Tailscale 有 WireGuard 设备认证在前，这层是纵深防御；对 IPv6 直连兜底路径没有边缘认证在前，这层是唯一防线（ADR-0007）。
 - **辅助键条（Key Bar）** — 移动端常驻虚拟按键行（Esc / Tab / Ctrl / 方向 / Shift+Tab）。没有它，Claude Code TUI 在手机上不可操作。
-- **headless 会话** — 二期的结构化会话类型（`claude -p --output-format stream-json` / `codex exec --json`），聊天 UI 与 IM 接入的数据源。明确不从 PTY 流中刮取对话。
+- **chat 会话** — 结构化会话类型（#17，原「headless 会话」构想的落地）：裸 stream-json 长驻子进程（`claude -p --input-format stream-json --output-format stream-json`，与 TUI 同一二进制，#16 选型）驱动，Hub 规整为 ChatItem 时间线广播并回放。聊天 UI 与 IM 接入的数据源，明确不从 PTY 流中刮取对话。codex 接入（`codex proto`）留缝未实施。
 
 ## 架构（一期）
 

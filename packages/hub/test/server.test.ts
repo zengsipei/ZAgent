@@ -61,7 +61,7 @@ describe("control 通道会话管理", () => {
       cwds: string[];
       sessions: SessionInfo[];
     }>("hello");
-    expect(hello.templates.map((t) => t.id)).toEqual(["claude", "codex", "bash"]);
+    expect(hello.templates.map((t) => t.id)).toEqual(["claude", "claude-chat", "codex", "bash"]);
     expect(hello.cwds.length).toBeGreaterThan(0);
     client.close();
   });

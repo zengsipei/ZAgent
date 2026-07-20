@@ -19,8 +19,10 @@ import {
 } from "@zagent/protocol";
 
 import { AuthFailureLimiter, clientKey, isRootToken, issueSessionToken, verifyToken, verifyUpgrade } from "./auth.js";
+import { ChatSession } from "./chatSession.js";
 import type { HubConfig } from "./config.js";
 import { SessionManager, buildTemplates, type ManagedSession } from "./manager.js";
+import { PtySession } from "./session.js";
 import { serveStatic } from "./static.js";
 
 export interface RunningHub {
@@ -166,7 +168,7 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
   // 无人上报容量时保持现状（attach / detach / 断开 / 容量变化都从这里走）
   function applyMinSize(sessionId: string): void {
     const managed = manager.get(sessionId);
-    if (managed === undefined || managed.session.exited) {
+    if (managed === undefined || !(managed.session instanceof PtySession) || managed.session.exited) {
       return;
     }
     let cols = Infinity;
@@ -193,16 +195,31 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
     });
   }
 
-  // 会话创建时挂一次输出/退出转发：输出发给当时 attach 的连接，退出后广播快照
+  // 会话创建时挂一次转发：pty 转字节流，chat 转结构化消息；退出后广播快照（共通）
   function wireSession(managed: ManagedSession): void {
     const { session } = managed;
-    session.onData((data) => {
-      sendToAttached(session.id, {
-        channel: sessionChannel(session.id),
-        type: "output",
-        payload: { data: utf8ToBase64(data) },
+    if (session instanceof ChatSession) {
+      const channel = sessionChannel(session.id);
+      session.onItem((item) => {
+        sendToAttached(session.id, { channel, type: "chat-item", payload: { item } });
       });
-    });
+      session.onDelta((text) => {
+        sendToAttached(session.id, { channel, type: "chat-delta", payload: { text } });
+      });
+      session.onState((state) => {
+        sendToAttached(session.id, { channel, type: "chat-state", payload: { state } });
+      });
+      // claudeSessionId 已由 manager 写进元数据，这里把快照播出去（列表可见、#19 可取）
+      session.onSessionId(() => broadcastSessions());
+    } else {
+      session.onData((data) => {
+        sendToAttached(session.id, {
+          channel: sessionChannel(session.id),
+          type: "output",
+          payload: { data: utf8ToBase64(data) },
+        });
+      });
+    }
     session.onExit((exitCode) => {
       sendToAttached(session.id, {
         channel: sessionChannel(session.id),
@@ -251,8 +268,25 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
 
         if (message.type === "input") {
           const managed = manager.get(sessionIdOf(message.channel));
-          if (managed !== undefined && !managed.session.exited) {
+          if (
+            managed !== undefined &&
+            managed.session instanceof PtySession &&
+            !managed.session.exited
+          ) {
             managed.session.write(base64ToUtf8(message.payload.data));
+          }
+          return;
+        }
+
+        if (message.type === "chat-input") {
+          const managed = manager.get(sessionIdOf(message.channel));
+          if (
+            managed !== undefined &&
+            managed.session instanceof ChatSession &&
+            !managed.session.exited
+          ) {
+            // user 回显与 thinking 状态经 wireSession 的回调广播给所有附加端
+            managed.session.sendUserText(message.payload.text);
           }
           return;
         }
@@ -297,6 +331,28 @@ export async function startHub(config: HubConfig): Promise<RunningHub> {
             // 重复 attach（重连补发）幂等：不覆盖已上报的容量
             if (!attached.has(managed.session.id)) {
               attached.set(managed.session.id, null);
+            }
+            if (managed.session instanceof ChatSession) {
+              send(ws, {
+                channel: CONTROL_CHANNEL,
+                type: "attached",
+                // chat 会话无网格概念，尺寸给占位值（信封字段统一，消费端忽略）
+                payload: { sessionId: managed.session.id, sessionType: "chat", cols: 80, rows: 24 },
+              });
+              // 时间线重放（ADR-0005 的 chat 对应物）：定稿条目 + 状态 + 回合中增量
+              send(ws, {
+                channel: sessionChannel(managed.session.id),
+                type: "chat-history",
+                payload: managed.session.history(),
+              });
+              if (managed.session.exited) {
+                send(ws, {
+                  channel: sessionChannel(managed.session.id),
+                  type: "exit",
+                  payload: { exitCode: managed.info.exitCode ?? 0 },
+                });
+              }
+              return;
             }
             const size = managed.session.size;
             send(ws, {

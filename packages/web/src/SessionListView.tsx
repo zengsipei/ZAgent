@@ -7,6 +7,7 @@ import {
   type ClientMessage,
   type SessionInfo,
   type SessionTemplate,
+  type SessionType,
 } from "@zagent/protocol";
 
 import { HUB_WS_URL } from "./hubUrl.js";
@@ -27,7 +28,7 @@ export function SessionListView({
   onOpen,
 }: {
   token: string;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionId: string, kind: SessionType) => void;
 }) {
   const [hello, setHello] = useState<HelloData | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -64,7 +65,7 @@ export function SessionListView({
         // 只响应自己发起的 create（Hub 只回给发起连接，这里再守一层）
         if (creatingRef.current) {
           creatingRef.current = false;
-          onOpenRef.current(message.payload.session.id);
+          onOpenRef.current(message.payload.session.id, message.payload.session.type);
         }
       } else if (message.type === "error") {
         creatingRef.current = false;
@@ -133,12 +134,13 @@ export function SessionListView({
               type="button"
               className="session-item-main"
               disabled={s.status !== "running"}
-              onClick={() => onOpen(s.id)}
+              onClick={() => onOpen(s.id, s.type)}
             >
               <span className="session-item-command">{s.command}</span>
               <span className="session-item-meta">
                 {s.template} · {s.cwd} ·{" "}
                 {s.status === "running" ? "运行中" : `已退出（exit ${s.exitCode ?? "?"}）`}
+                {s.claudeSessionId !== undefined && ` · claude:${s.claudeSessionId.slice(0, 8)}`}
               </span>
             </button>
             <button

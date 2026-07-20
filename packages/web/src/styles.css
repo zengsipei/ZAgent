@@ -578,3 +578,101 @@ body {
   white-space: pre;
   pointer-events: none;
 }
+
+/* ---------------------------------------------------------------------------
+ * chat 验收日志视图（#17 临时 UI）——M2（#18）落地正经聊天气泡时整体替换
+ * ------------------------------------------------------------------------- */
+
+.chat-debug {
+  display: flex;
+  flex-direction: column;
+  height: var(--app-height, 100dvh);
+}
+
+.chat-debug-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 6px var(--space-md);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-debug-header button {
+  border: none;
+  border-radius: 6px;
+  padding: 4px var(--space-sm);
+  background: var(--cap);
+  color: var(--ink);
+  font: 500 0.8125rem var(--font-ui);
+}
+
+.chat-debug-title {
+  font: 500 0.8125rem var(--font-mono);
+  color: var(--muted);
+}
+
+.chat-debug-header .session-list-status {
+  margin-left: auto;
+}
+
+.chat-debug-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-md);
+  font: 0.8125rem/1.5 var(--font-mono);
+  overscroll-behavior: contain;
+}
+
+.chat-debug-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 0;
+  color: var(--muted);
+}
+
+.chat-debug-line[data-kind="user"] {
+  color: var(--accent);
+}
+
+.chat-debug-line[data-kind="assistant"],
+.chat-debug-pending {
+  color: var(--ink);
+}
+
+.chat-debug-line[data-kind="system"] {
+  color: var(--danger);
+}
+
+.chat-debug-input {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.chat-debug-input input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px var(--space-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font: 0.875rem var(--font-ui);
+}
+
+.chat-debug-input button {
+  border: none;
+  border-radius: 6px;
+  padding: 8px var(--space-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 0.875rem var(--font-ui);
+}
+
+.chat-debug-input button:disabled {
+  background: var(--cap);
+  color: var(--muted);
+}

@@ -32,8 +32,8 @@ export interface Envelope {
   payload: unknown;
 }
 
-/** 会话类型（ADR-0004：一期仅 pty，二期新增 headless）。 */
-export type SessionType = "pty";
+/** 会话类型（ADR-0004）：pty = 终端流；chat = 结构化消息流（stream-json 驱动，#17）。 */
+export type SessionType = "pty" | "chat";
 
 /** 命令模板：新建会话时的可选起点（claude / codex / bash 等），由 Hub 下发。 */
 export interface SessionTemplate {
@@ -41,6 +41,8 @@ export interface SessionTemplate {
   name: string;
   command: string;
   args: string[];
+  /** 该模板创建的会话类型：决定驱动方式（PTY spawn 或 stream-json 子进程）。 */
+  kind: SessionType;
 }
 
 export type SessionStatus = "running" | "exited";
@@ -57,6 +59,11 @@ export interface SessionInfo {
   status: SessionStatus;
   exitCode?: number;
   createdAt: number;
+  /**
+   * 被控 claude 的会话 id（chat 会话从 system/init 事件取得）。
+   * 双模切换（#19）凭它 `--resume`：Hub 进程死后对话上下文仍可找回。
+   */
+  claudeSessionId?: string;
 }
 
 /** data 为 base64 编码的 PTY 输入字节。 */
@@ -81,6 +88,55 @@ export interface OutputPayload {
 
 export interface ExitPayload {
   exitCode: number;
+}
+
+// ---------------------------------------------------------------------------
+// chat 会话（#17）：结构化消息流的数据模型——未来 IM 接入的地基
+// ---------------------------------------------------------------------------
+
+/**
+ * 聊天时间线条目：Hub 把 claude stream-json 事件规整成的定稿消息。
+ * 前端与 IM adapter 只消费这个模型，不接触 CLI 原始事件格式。
+ * text / input 超长时由 Hub 截断（回放缓冲健康优先，完整内容属后续「详情」需求）。
+ */
+export type ChatItem =
+  | { kind: "user"; id: string; text: string; ts: number }
+  | { kind: "assistant"; id: string; text: string; ts: number }
+  | { kind: "tool_use"; id: string; name: string; input: string; ts: number }
+  | { kind: "tool_result"; id: string; toolUseId: string; text: string; isError: boolean; ts: number }
+  | { kind: "system"; id: string; text: string; ts: number };
+
+/**
+ * 会话状态：thinking = 回合进行中（已发输入未收 result）；idle = 等下一条输入；
+ * awaiting-input = 等权限审批等人工介入（协议留位，skip-permissions 日用形态暂不触发）。
+ */
+export type ChatState = "idle" | "thinking" | "awaiting-input";
+
+/** 客户端 → Hub：用户输入一条消息。 */
+export interface ChatInputPayload {
+  text: string;
+}
+
+/** assistant 生成中的文本增量（打字机预览）；定稿以 chat-item 为准。 */
+export interface ChatDeltaPayload {
+  text: string;
+}
+
+/** 时间线新增一条定稿条目。 */
+export interface ChatItemPayload {
+  item: ChatItem;
+}
+
+export interface ChatStatePayload {
+  state: ChatState;
+}
+
+/** attach 重放（ADR-0005）：完整时间线 + 当前状态 + 回合中未定稿的增量累积。 */
+export interface ChatHistoryPayload {
+  items: ChatItem[];
+  state: ChatState;
+  /** 回合进行中重连时，自上条定稿后累积的 assistant 文本。 */
+  pending?: string;
 }
 
 export interface AttachedPayload {
@@ -130,6 +186,7 @@ export interface ErrorPayload {
 /** 客户端 → Hub。会话管理全部走 control 通道信封，不新增 REST 端点（ADR-0004）。 */
 export type ClientMessage =
   | { channel: SessionChannel; type: "input"; payload: InputPayload }
+  | { channel: SessionChannel; type: "chat-input"; payload: ChatInputPayload }
   | { channel: typeof CONTROL_CHANNEL; type: "resize"; payload: ResizePayload }
   | { channel: typeof CONTROL_CHANNEL; type: "list"; payload: Record<string, never> }
   | { channel: typeof CONTROL_CHANNEL; type: "create"; payload: CreatePayload }
@@ -146,7 +203,11 @@ export type HubMessage =
   | { channel: typeof CONTROL_CHANNEL; type: "error"; payload: ErrorPayload }
   | { channel: SessionChannel; type: "output"; payload: OutputPayload }
   | { channel: SessionChannel; type: "exit"; payload: ExitPayload }
-  | { channel: SessionChannel; type: "resized"; payload: ResizedPayload };
+  | { channel: SessionChannel; type: "resized"; payload: ResizedPayload }
+  | { channel: SessionChannel; type: "chat-item"; payload: ChatItemPayload }
+  | { channel: SessionChannel; type: "chat-delta"; payload: ChatDeltaPayload }
+  | { channel: SessionChannel; type: "chat-state"; payload: ChatStatePayload }
+  | { channel: SessionChannel; type: "chat-history"; payload: ChatHistoryPayload };
 
 // ---------------------------------------------------------------------------
 // serialize / parse
@@ -193,6 +254,13 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return null;
     }
     return { channel: envelope.channel, type: "input", payload: { data } };
+  }
+  if (envelope.type === "chat-input" && isSessionChannel(envelope.channel)) {
+    const { text } = payload as Record<string, unknown>;
+    if (typeof text !== "string") {
+      return null;
+    }
+    return { channel: envelope.channel, type: "chat-input", payload: { text } };
   }
   if (envelope.type === "resize" && envelope.channel === CONTROL_CHANNEL) {
     const { sessionId, cols, rows } = payload as Record<string, unknown>;
@@ -245,7 +313,7 @@ export function parseHubMessage(raw: string): HubMessage | null {
     const { sessionId, sessionType, cols, rows } = payload as Record<string, unknown>;
     if (
       typeof sessionId !== "string" ||
-      sessionType !== "pty" ||
+      !isSessionType(sessionType) ||
       !isPositiveInt(cols) ||
       !isPositiveInt(rows)
     ) {
@@ -312,11 +380,82 @@ export function parseHubMessage(raw: string): HubMessage | null {
     }
     return { channel: envelope.channel, type: "resized", payload: { cols, rows } };
   }
+  if (envelope.type === "chat-item" && isSessionChannel(envelope.channel)) {
+    const { item } = payload as Record<string, unknown>;
+    if (!isChatItem(item)) {
+      return null;
+    }
+    return { channel: envelope.channel, type: "chat-item", payload: { item } };
+  }
+  if (envelope.type === "chat-delta" && isSessionChannel(envelope.channel)) {
+    const { text } = payload as Record<string, unknown>;
+    if (typeof text !== "string") {
+      return null;
+    }
+    return { channel: envelope.channel, type: "chat-delta", payload: { text } };
+  }
+  if (envelope.type === "chat-state" && isSessionChannel(envelope.channel)) {
+    const { state } = payload as Record<string, unknown>;
+    if (!isChatState(state)) {
+      return null;
+    }
+    return { channel: envelope.channel, type: "chat-state", payload: { state } };
+  }
+  if (envelope.type === "chat-history" && isSessionChannel(envelope.channel)) {
+    const { items, state, pending } = payload as Record<string, unknown>;
+    if (
+      !Array.isArray(items) ||
+      !items.every(isChatItem) ||
+      !isChatState(state) ||
+      (pending !== undefined && typeof pending !== "string")
+    ) {
+      return null;
+    }
+    return {
+      channel: envelope.channel,
+      type: "chat-history",
+      payload: pending === undefined ? { items, state } : { items, state, pending },
+    };
+  }
   return null;
 }
 
 function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function isSessionType(value: unknown): value is SessionType {
+  return value === "pty" || value === "chat";
+}
+
+function isChatState(value: unknown): value is ChatState {
+  return value === "idle" || value === "thinking" || value === "awaiting-input";
+}
+
+function isChatItem(value: unknown): value is ChatItem {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const item = value as Record<string, unknown>;
+  if (typeof item["id"] !== "string" || typeof item["ts"] !== "number") {
+    return false;
+  }
+  switch (item["kind"]) {
+    case "user":
+    case "assistant":
+    case "system":
+      return typeof item["text"] === "string";
+    case "tool_use":
+      return typeof item["name"] === "string" && typeof item["input"] === "string";
+    case "tool_result":
+      return (
+        typeof item["toolUseId"] === "string" &&
+        typeof item["text"] === "string" &&
+        typeof item["isError"] === "boolean"
+      );
+    default:
+      return false;
+  }
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -327,12 +466,13 @@ function isSessionTemplate(value: unknown): value is SessionTemplate {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const { id, name, command, args } = value as Record<string, unknown>;
+  const { id, name, command, args, kind } = value as Record<string, unknown>;
   return (
     typeof id === "string" &&
     typeof name === "string" &&
     typeof command === "string" &&
-    isStringArray(args)
+    isStringArray(args) &&
+    isSessionType(kind)
   );
 }
 
@@ -340,19 +480,18 @@ function isSessionInfo(value: unknown): value is SessionInfo {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const { id, type, template, command, cwd, status, exitCode, createdAt } = value as Record<
-    string,
-    unknown
-  >;
+  const { id, type, template, command, cwd, status, exitCode, createdAt, claudeSessionId } =
+    value as Record<string, unknown>;
   return (
     typeof id === "string" &&
-    type === "pty" &&
+    isSessionType(type) &&
     typeof template === "string" &&
     typeof command === "string" &&
     typeof cwd === "string" &&
     (status === "running" || status === "exited") &&
     (exitCode === undefined || typeof exitCode === "number") &&
-    typeof createdAt === "number"
+    typeof createdAt === "number" &&
+    (claudeSessionId === undefined || typeof claudeSessionId === "string")
   );
 }
 

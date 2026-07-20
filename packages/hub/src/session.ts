@@ -154,8 +154,9 @@ export class PtySession {
 
 // 会话环境 = 宿主环境去掉 Claude Code 的会话标记（CLAUDECODE、CLAUDE_CODE_SESSION_ID 等）：
 // Hub 若由某个 Claude Code 会话里的终端启动，这些标记会泄进被控 CLI，
-// 让它自认嵌套子会话而行为漂移。CLAUDE_CONFIG_DIR 例外保留（Docker 凭证卷依赖，ADR-0002）。
-function cleanEnv(): Record<string, string> {
+// 让它自认嵌套子会话而行为漂移（chat 驱动下更会让新轮次完全不写转写文件，#16 坑 1）。
+// CLAUDE_CONFIG_DIR 例外保留（Docker 凭证卷依赖，ADR-0002）。
+export function cleanEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) {
@@ -171,7 +172,7 @@ function cleanEnv(): Record<string, string> {
 
 // Windows 上 node-pty 需要可执行文件的完整路径（裸命令名会报 File not found），
 // 因此手动沿 PATH + PATHEXT 解析；类 Unix 平台交给系统解析即可。
-function resolveExecutable(command: string): string {
+export function resolveExecutable(command: string): string {
   if (process.platform !== "win32" || isAbsolute(command) || command.includes("\\") || command.includes("/")) {
     return command;
   }

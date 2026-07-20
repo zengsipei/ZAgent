@@ -5,19 +5,29 @@ import { existsSync, statSync } from "node:fs";
 
 import type { CreatePayload, SessionInfo, SessionTemplate } from "@zagent/protocol";
 
+import { ChatSession } from "./chatSession.js";
 import { PtySession } from "./session.js";
 
 export interface ManagedSession {
-  session: PtySession;
+  session: PtySession | ChatSession;
   info: SessionInfo;
 }
 
-/** 命令模板：各模板走同一条 PTY spawn 路径（PTY 模式天然命令无关）。 */
+/** 命令模板：pty 模板走同一条 PTY spawn 路径；chat 模板走 stream-json 子进程（#17）。 */
 export function buildTemplates(shell: string): SessionTemplate[] {
   return [
-    { id: "claude", name: "Claude Code", command: "claude", args: [] },
-    { id: "codex", name: "Codex", command: "codex", args: [] },
-    { id: "bash", name: "Shell", command: shell, args: [] },
+    { id: "claude", name: "Claude Code", command: "claude", args: [], kind: "pty" },
+    // 默认 skip-permissions：M1 无审批 UI，-p 模式遇权限确认会僵住；
+    // 与 owner 日用形态一致，权限审批气泡落地（见地图雾区）后再收紧
+    {
+      id: "claude-chat",
+      name: "Claude 聊天",
+      command: "claude",
+      args: ["--dangerously-skip-permissions"],
+      kind: "chat",
+    },
+    { id: "codex", name: "Codex", command: "codex", args: [], kind: "pty" },
+    { id: "bash", name: "Shell", command: shell, args: [], kind: "pty" },
   ];
 }
 
@@ -44,12 +54,21 @@ export class SessionManager {
     }
     const args = options.args ?? template.args;
     const id = `s${++this.counter}`;
-    const session = new PtySession({ id, command: template.command, args, cwd: options.cwd });
+    let session: PtySession | ChatSession;
+    let command: string;
+    if (template.kind === "chat") {
+      const chat = new ChatSession({ id, command: template.command, args, cwd: options.cwd });
+      session = chat;
+      command = chat.commandLine;
+    } else {
+      session = new PtySession({ id, command: template.command, args, cwd: options.cwd });
+      command = [template.command, ...args].join(" ");
+    }
     const info: SessionInfo = {
       id,
       type: session.type,
       template: template.id,
-      command: [template.command, ...args].join(" "),
+      command,
       cwd: options.cwd,
       status: "running",
       createdAt: Date.now(),
@@ -60,6 +79,12 @@ export class SessionManager {
       info.status = "exited";
       info.exitCode = exitCode;
     });
+    if (session instanceof ChatSession) {
+      // claudeSessionId 簿记（#19 双模切换的凭据）：init 事件到达即写入元数据
+      session.onSessionId((claudeSessionId) => {
+        info.claudeSessionId = claudeSessionId;
+      });
+    }
     return managed;
   }
 
