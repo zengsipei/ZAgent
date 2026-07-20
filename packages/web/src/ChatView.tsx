@@ -3,7 +3,15 @@
 // viewport meta 的 interactive-widget=resizes-content 与浏览器原生行为保证——
 // 这里禁止出现任何键盘检测（visualViewport / VirtualKeyboard / 高度估算，#7 教训）。
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -194,6 +202,24 @@ export function ChatView({
   const stickRef = useRef(true);
   const wsRef = useRef<WebSocket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // 键盘让位（快捷方式窗口的覆盖式键盘 + 零几何信号，#7 铁证）：不读键盘几何，
+  // 只用「输入框聚焦」这个可靠信号——聚焦时布局收到 min(100dvh, 屏高基准×0.5)。
+  // 浏览器形态 resizes-content 已把 100dvh 缩对，min 自动取正确值；快捷方式窗口
+  // 100dvh 恒全屏，靠 0.5 估算让位（#7 同款：宁高勿低，留缝好过被盖）。
+  // 屏高基准取无键盘时的 innerHeight，失焦态跟随 resize（转屏）刷新。
+  const [composing, setComposing] = useState(false);
+  const [screenH, setScreenH] = useState(() => window.innerHeight);
+
+  useEffect(() => {
+    const refresh = (): void => {
+      if (document.activeElement !== taRef.current) {
+        setScreenH(window.innerHeight);
+      }
+    };
+    window.addEventListener("resize", refresh);
+    return () => window.removeEventListener("resize", refresh);
+  }, []);
 
   function scrollToBottom(): void {
     const log = logRef.current;
@@ -406,7 +432,11 @@ export function ChatView({
   const canSend = attached && exited === null && draft.trim() !== "";
 
   return (
-    <div className="chat">
+    <div
+      className="chat"
+      data-kb-yield={composing || undefined}
+      style={{ "--screen-h": `${screenH}px` } as CSSProperties}
+    >
       <div className="status-bar" data-tone={status.tone}>
         <button type="button" className="status-back" onClick={onBack} aria-label="返回会话列表">
           ‹ 列表
@@ -419,7 +449,19 @@ export function ChatView({
       </div>
 
       <div className="chat-log-wrap">
-        <div className="chat-log" ref={logRef} onScroll={handleScroll}>
+        <div
+          className="chat-log"
+          ref={logRef}
+          onScroll={handleScroll}
+          onPointerDown={() => {
+            // 触摸消息区收键盘（微信同款）：Android 返回键收键盘不触发 blur，
+            // 零信号环境检测不到收起——用户转去看内容就是最可靠的收起时机
+            const ta = taRef.current;
+            if (ta !== null && document.activeElement === ta) {
+              ta.blur();
+            }
+          }}
+        >
           <div className="chat-log-inner">
             {timeline.length === 0 && pending === "" && !showThinking && (
               <p className="chat-empty">
@@ -448,6 +490,7 @@ export function ChatView({
             type="button"
             className="chat-jump"
             aria-label="回到最新消息"
+            onPointerDown={(e) => e.preventDefault()}
             onClick={() => {
               stickRef.current = true;
               setStuck(true);
@@ -461,14 +504,23 @@ export function ChatView({
 
       <form className="chat-composer" onSubmit={handleSubmit}>
         <textarea
+          ref={taRef}
           rows={1}
           value={draft}
           placeholder={exited !== null ? "会话已退出" : "发消息…"}
           disabled={exited !== null}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
+          onFocus={() => setComposing(true)}
+          onBlur={() => setComposing(false)}
         />
-        <button type="submit" disabled={!canSend} aria-label="发送">
+        {/* pointerdown 阻止焦点转移：点发送不 blur、键盘不收，连续发送不断流 */}
+        <button
+          type="submit"
+          disabled={!canSend}
+          aria-label="发送"
+          onPointerDown={(e) => e.preventDefault()}
+        >
           发送
         </button>
       </form>

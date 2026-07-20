@@ -592,6 +592,16 @@ body {
   height: 100dvh;
 }
 
+/* 键盘让位（仅触屏）：输入框聚焦时收缩布局，flex 把输入条推进可视区。
+ * 浏览器形态 resizes-content 下 100dvh 已随键盘缩小，min() 自动取正确值；
+ * 快捷方式窗口（覆盖式键盘 + 零几何信号，#7）100dvh 恒全屏，
+ * 靠屏高基准 ×0.5 估算让位——宁高勿低，留缝好过输入条被键盘盖住 */
+@media (pointer: coarse) {
+  .chat[data-kb-yield] {
+    height: min(100dvh, calc(var(--screen-h, 100dvh) * 0.5));
+  }
+}
+
 .chat-state-badge {
   margin-left: auto;
   color: var(--accent);
